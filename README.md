@@ -1,15 +1,28 @@
-# mautrix-twilio
-![Languages](https://img.shields.io/github/languages/top/mautrix/twilio.svg)
-[![License](https://img.shields.io/github/license/mautrix/twilio.svg)](LICENSE)
-[![GitLab CI](https://mau.dev/mautrix/twilio/badges/main/pipeline.svg)](https://mau.dev/mautrix/twilio/container_registry)
+# mautrix-line-messenger
 
-A bridgev2 demo project for bridging Matrix and Twilio. See the [blog post] for
-a walkthrough of writing this bridge.
+[![Go Report Card](https://goreportcard.com/badge/github.com/highesttt/mautrix-line-messenger)](https://goreportcard.com/report/github.com/highesttt/mautrix-line-messenger)
+![Languages](https://img.shields.io/github/languages/top/highesttt/mautrix-line-messenger.svg)
+[![License](https://img.shields.io/github/license/highesttt/mautrix-line-messenger.svg)](LICENSE)
 
-This is meant as a relatively minimal tutorial rather than a fully-featured
-Twilio bridge, so there's no dedicated docs or support room. The usual
-instructions for setting up Go bridges should work. For help with using
-mautrix-go to write bridges, there's [#go:maunium.net].
+A Matrix bridge for LINE Messenger using mautrix-go.\
+Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
-[blog post]: https://mau.fi/blog/megabridge-twilio/
-[#go:maunium.net]: https://matrix.to/#/#go:maunium.net
+## Roadmap
+
+- [x] Basic messaging (encrypted text messages)
+- [ ] Decrypt messages
+- [ ] Decrypt usernames
+- [ ] Sending messages
+- [ ] Prefetch chats
+- [ ] Actual login via mail/password (instead of access token)
+- [ ] Group chats
+- [ ] Media messages (images, videos, voice notes, files)
+- [ ] Sticker support
+
+## How obtain LINE access token
+
+Sign in via the [LINE Chrome extension](https://chromewebstore.google.com/detail/line/ophjlpahpchlmihnnnihgmmeilfjmjjc) and get the access token from your browser's developer tools / cookies.
+
+1. Obtain a LINE access token via the LINE Chrome extension.
+2. Set up a Matrix homeserver and a Beeper instance with the Bridge V2 enabled.
+3. Add the mautrix-line-messenger bridge to Beeper and configure it with your LINE access token.

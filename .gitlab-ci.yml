@@ -1,3 +1,0 @@
-include:
-- project: 'mautrix/ci'
-  file: '/gov2-as-default.yml'

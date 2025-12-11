@@ -4,7 +4,7 @@ services:
   mautrix-line:
     build:
       context: .
-      dockerfile: Dockerfile.ci
+      dockerfile: Dockerfile
     volumes:
       - ./data:/data
     restart: unless-stopped
