@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  mautrix-line:
+    build:
+      context: .
+      dockerfile: Dockerfile.ci
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

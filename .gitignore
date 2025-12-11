@@ -5,5 +5,7 @@
 *.db*
 *.log*
 
-/mautrix-twilio
+/mautrix-line*
 /start
+
+/docs

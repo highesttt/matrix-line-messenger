@@ -15,7 +15,7 @@ repos:
         exclude: "pb\\.go$"
         args:
           - "-local"
-          - "go.mau.fi/mautrix-twilio"
+          - "github.com/highesttt/mautrix-line-messenger"
           - "-w"
       - id: go-vet-mod
       - id: go-staticcheck-repo-mod

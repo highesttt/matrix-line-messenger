@@ -1,15 +1,27 @@
 ARG DOCKER_HUB="docker.io"
 
+FROM ${DOCKER_HUB}/alpine:3.22 AS builder
+
+RUN apk add --no-cache go git build-base olm-dev
+
+WORKDIR /build
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN go build -o mautrix-line ./cmd/mautrix-line
+
 FROM ${DOCKER_HUB}/alpine:3.22
 
 ENV UID=1337 \
     GID=1337
 
-RUN apk add --no-cache ffmpeg su-exec ca-certificates bash jq curl yq-go
+RUN apk add --no-cache ffmpeg su-exec ca-certificates bash jq curl yq-go olm
 
-ARG EXECUTABLE=./mautrix-twilio
-COPY $EXECUTABLE /usr/bin/mautrix-twilio
+COPY --from=builder /build/mautrix-line /usr/bin/mautrix-line
 COPY ./docker-run.sh /docker-run.sh
+RUN chmod +x /docker-run.sh
 ENV BRIDGEV2=1
 VOLUME /data
 WORKDIR /data

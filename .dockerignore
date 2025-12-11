@@ -1,0 +1,9 @@
+# Exclude runtime state and local caches from build context
+/data/
+data/
+
+# Git and editor cruft
+.git
+.git/**
+.idea
+.vscode
