@@ -14,6 +14,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 - [ ] Decrypt usernames
 - [ ] Sending messages
 - [ ] Prefetch chats
+- [ ] Get own profile details (ID & Name)
 - [ ] Actual login via mail/password (instead of access token)
 - [ ] Group chats
 - [ ] Media messages (images, videos, voice notes, files)
