@@ -2,22 +2,20 @@ package line
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
+
+	gen "github.com/highesttt/mautrix-line-messenger/pkg"
 )
 
 const (
 	BaseURL       = "https://line-chrome-gw.line-apps.com/api/talk/thrift/Talk"
-	ChromeVersion = "3.7.1"
+	ExtensionVersion = "3.7.1"
 	UserAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
-	// !FIX: ChannelSecret is required for x-hmac header, but its value is unknown at the moment
-	ChannelSecret = "NOT YET IMPLEMENTED"
 )
 
 type Client struct {
@@ -47,15 +45,23 @@ func (c *Client) callRPC(service, method string, args ...interface{}) ([]byte, e
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("x-line-chrome-version", ChromeVersion)
+	req.Header.Set("x-line-chrome-version", ExtensionVersion)
 	req.Header.Set("x-lal", "en_US")
 
 	if c.AccessToken != "" {
 		req.Header.Set("x-line-access", c.AccessToken)
 	}
 
-	// !FIX: Requests don't work without hmac header but generating them does not work
-	signature := c.generateHMAC(bodyBytes)
+	hmacGenerator, err := gen.NewGenerator()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HMAC generator: %w", err)
+	}
+	defer hmacGenerator.Close()
+
+	signature, err := hmacGenerator.GenerateSignature(strings.Split(url, "https://line-chrome-gw.line-apps.com")[1], string(bodyBytes), c.AccessToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate HMAC signature: %w", err)
+	}
 	req.Header.Set("x-hmac", signature)
 
 	resp, err := c.HTTPClient.Do(req)
@@ -71,11 +77,4 @@ func (c *Client) callRPC(service, method string, args ...interface{}) ([]byte, e
 	}
 
 	return respBody, nil
-}
-
-// temporary generateHMAC function for x-hmac
-func (c *Client) generateHMAC(body []byte) string {
-	mac := hmac.New(sha256.New, []byte(ChannelSecret))
-	mac.Write(body)
-	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }

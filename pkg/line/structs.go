@@ -3,16 +3,16 @@ package line
 import "encoding/json"
 
 type LoginRequest struct {
-	Type             int    `json:"type"`
+	Type             int    `json:"type"` // 0=Email/Password, 1=QRCode, 2=Secret
 	IdentityProvider int    `json:"identityProvider"`
-	Identifier       string `json:"identifier"` // Email
-	Password         string `json:"password"`   // Hashded password?
+	Identifier       string `json:"identifier"` // Identifier from RSA
+	Password         string `json:"password"`   // \sessionkeysize{sessionKey}+\emailsize{email}+\passwordsize{password}
 	KeepLoggedIn     bool   `json:"keepLoggedIn"`
 	AccessLocation   string `json:"accessLocation"`
 	SystemName       string `json:"systemName"`
-	Certificate      string `json:"certificate"`
+	Certificate      string `json:"certificate"` // When device has been verified, Type=0
 	Verifier         string `json:"verifier"`
-	Secret           string `json:"secret"`
+	Secret           string `json:"secret"` // PIN for Type=2 login
 	E2EEVersion      int    `json:"e2eeVersion"`
 }
 

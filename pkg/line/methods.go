@@ -15,8 +15,8 @@ func (c *Client) LoginV2(email, password, certificate string) ([]byte, error) {
 		IdentityProvider: 1,
 		Identifier:       email,
 		Password:         password,
-		KeepLoggedIn:     true,
-		AccessLocation:   "127.0.0.1",
+		KeepLoggedIn:     false,
+		AccessLocation:   "",
 		SystemName:       "Chrome",
 		Certificate:      certificate,
 		E2EEVersion:      1,
@@ -33,7 +33,7 @@ func (c *Client) GetProfile() ([]byte, error) {
 func (c *Client) FetchOps(localRev int64) ([]byte, error) {
 	q := url.Values{}
 	q.Set("localRev", strconv.FormatInt(localRev, 10))
-	q.Set("version", ChromeVersion)
+	q.Set("version", ExtensionVersion)
 	q.Set("lastPartialFullSyncs", "{}")
 	q.Set("language", "en_US")
 
@@ -82,7 +82,7 @@ func (c *Client) GetMessageBoxes() ([]byte, error) {
 
 func (c *Client) setHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("x-line-chrome-version", ChromeVersion)
+	req.Header.Set("x-line-chrome-version", ExtensionVersion)
 	req.Header.Set("x-lal", "en_US")
 	if c.AccessToken != "" {
 		req.Header.Set("x-line-access", c.AccessToken)

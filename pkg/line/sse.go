@@ -13,7 +13,7 @@ import (
 func (c *Client) ListenSSE(localRev int64, callback func(event, data string)) error {
 	q := url.Values{}
 	q.Set("localRev", strconv.FormatInt(localRev, 10))
-	q.Set("version", ChromeVersion)
+	q.Set("version", ExtensionVersion)
 	q.Set("lastPartialFullSyncs", "{}")
 	q.Set("language", "en_US")
 

@@ -2,9 +2,6 @@ package connector
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -237,7 +234,6 @@ func (lc *LineClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*
 	return &bridgev2.UserInfo{Identifiers: []string{string(ghost.ID)}, Name: ptr.Ptr(string(ghost.ID))}, nil
 }
 
-// -- Webhook Structs (Legacy/Bot support) --
 type lineWebhook struct {
 	Events []lineEvent `json:"events"`
 }
@@ -263,14 +259,16 @@ type lineMessage struct {
 
 // !FIX : Temporary function to attempt to validate signature
 func (lc *LineClient) ValidateSignature(body []byte, signature string) bool {
-	mac := hmac.New(sha256.New, []byte(line.ChannelSecret))
-	mac.Write(body)
-	expected := mac.Sum(nil)
-	decoded, err := base64.StdEncoding.DecodeString(signature)
-	if err != nil {
-		return false
-	}
-	return hmac.Equal(expected, decoded)
+	return false
+
+	// mac := hmac.New(sha256.New, []byte(line.ChannelSecret))
+	// mac.Write(body)
+	// expected := mac.Sum(nil)
+	// decoded, err := base64.StdEncoding.DecodeString(signature)
+	// if err != nil {
+	// 	return false
+	// }
+	// return hmac.Equal(expected, decoded)
 }
 
 func (lc *LineClient) HandleWebhook(ctx context.Context, body []byte) error {
