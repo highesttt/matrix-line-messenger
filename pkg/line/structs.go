@@ -10,6 +10,7 @@ type LoginRequest struct {
 	KeepLoggedIn     bool   `json:"keepLoggedIn"`
 	AccessLocation   string `json:"accessLocation"`
 	SystemName       string `json:"systemName"`
+	ModelName        string `json:"modelName"`
 	Certificate      string `json:"certificate"` // When device has been verified, Type=0
 	Verifier         string `json:"verifier"`
 	Secret           string `json:"secret"` // PIN for Type=2 login
@@ -49,4 +50,39 @@ type Message struct {
 	Text string `json:"text,omitempty"`
 
 	Chunks []string `json:"chunks,omitempty"`
+}
+
+type RSAKeyInfo struct {
+	KeyName    string `json:"keynm"`
+	NValue     string `json:"nvalue"`
+	EValue     string `json:"evalue"`
+	SessionKey string `json:"sessionKey"`
+}
+
+type LoginResult struct {
+	AuthToken   string `json:"authToken"`
+	Certificate string `json:"certificate"`
+	Verifier    string `json:"verifier"`
+	PinCode     string `json:"pinCode"`
+	Pin         string `json:"-"` // Generated locally
+	Type        int    `json:"type"`
+	Param       string `json:"param"` // Sometimes used
+	Message     string `json:"message"`
+}
+
+type LoginPollingResult struct {
+	Result struct {
+		Metadata struct {
+			ErrorCode         string `json:"errorCode"`
+			EncryptedKeyChain string `json:"encryptedKeyChain"`
+			E2EEVersion       string `json:"e2eeVersion"`
+			KeyID             string `json:"keyId"`
+			PublicKey         string `json:"publicKey"`
+			AuthToken         string `json:"authToken"`     // Sometimes here
+			Certificate       string `json:"certificate"`   // Sometimes here
+			PinCode           string `json:"pinCode"`
+		} `json:"metadata"`
+	} `json:"result"`
+	Timestamp string `json:"timestamp"`
+	AuthPhase string `json:"authPhase"`
 }

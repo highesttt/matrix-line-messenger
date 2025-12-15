@@ -9,16 +9,19 @@ import (
 )
 
 // LoginV2 performs the loginV2 RPC call to authenticate a user
-func (c *Client) LoginV2(email, password, certificate string) ([]byte, error) {
+func (c *Client) LoginV2(email, password, certificate, secret string) ([]byte, error) {
 	req := LoginRequest{
-		Type:             0,
+		Type:             2,
 		IdentityProvider: 1,
 		Identifier:       email,
 		Password:         password,
 		KeepLoggedIn:     false,
 		AccessLocation:   "",
 		SystemName:       "Chrome",
+		ModelName:        "",
 		Certificate:      certificate,
+		Verifier:         "",
+		Secret:           secret, // PIN for Secret for type 2
 		E2EEVersion:      1,
 	}
 	return c.callRPC("AuthService", "loginV2", req)

@@ -29,12 +29,42 @@ var _ bridgev2.NetworkAPI = (*LineClient)(nil)
 
 func (lc *LineClient) Connect(ctx context.Context) {
 	if lc.AccessToken == "" {
-		lc.UserLogin.BridgeState.Send(status.BridgeState{
-			StateEvent: status.StateBadCredentials,
-			Error:      "line-missing-token",
-			Message:    "access token missing",
-		})
-		return
+		var email, password string
+		if meta, ok := lc.UserLogin.Metadata.(*UserLoginMetadata); ok {
+			email = meta.Email
+			password = meta.Password
+		}
+
+		if email != "" && password != "" {
+			lc.UserLogin.Bridge.Log.Info().Str("email", email).Msg("Attempting to login with email/password...")
+			client := line.NewClient("")
+			res, err := client.Login(email, password)
+			if err != nil {
+				lc.UserLogin.BridgeState.Send(status.BridgeState{
+					StateEvent: status.StateBadCredentials,
+					Error:      "line-login-failed",
+					Message:    fmt.Sprintf("login failed: %v", err),
+				})
+				return
+			}
+			if res.AuthToken == "" {
+				lc.UserLogin.BridgeState.Send(status.BridgeState{
+					StateEvent: status.StateBadCredentials,
+					Error:      "line-login-interaction-required",
+					Message:    "Login requires interaction (PIN code), cannot perform in background.",
+				})
+				return
+			}
+			lc.AccessToken = client.AccessToken
+			lc.UserLogin.Bridge.Log.Info().Msg("Login successful!")
+		} else {
+			lc.UserLogin.BridgeState.Send(status.BridgeState{
+				StateEvent: status.StateBadCredentials,
+				Error:      "line-missing-token",
+				Message:    "access token missing and no credentials provided",
+			})
+			return
+		}
 	}
 
 	lc.UserLogin.BridgeState.Send(status.BridgeState{

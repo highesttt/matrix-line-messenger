@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/highesttt/mautrix-line-messenger/pkg/line"
@@ -121,6 +122,8 @@ func (lc *LineConnector) GetDBMetaTypes() database.MetaTypes {
 
 type UserLoginMetadata struct {
 	AccessToken string `json:"access_token"`
+	Email       string `json:"email,omitempty"`
+	Password    string `json:"password,omitempty"`
 }
 
 func (lc *LineConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin) error {
@@ -138,6 +141,10 @@ func (lc *LineConnector) GetLoginFlows() []bridgev2.LoginFlow {
 		Name:        "Auth Token",
 		Description: "Enter your LINE Auth Token (x-line-access header)",
 		ID:          "auth-token",
+	}, {
+		Name:        "Email & Password",
+		Description: "Login with your LINE Email and Password",
+		ID:          "email-password",
 	}}
 }
 
@@ -145,6 +152,8 @@ func (lc *LineConnector) CreateLogin(ctx context.Context, user *bridgev2.User, f
 	switch flowID {
 	case "auth-token":
 		return &LineLogin{User: user}, nil
+	case "email-password":
+		return &LineEmailLogin{User: user}, nil
 	default:
 		return nil, fmt.Errorf("unknown login flow ID")
 	}
@@ -222,3 +231,203 @@ func (ll *LineLogin) SubmitUserInput(ctx context.Context, input map[string]strin
 }
 
 func (ll *LineLogin) Cancel() {}
+
+type LineEmailLogin struct {
+	User     *bridgev2.User
+	Email    string
+	Password string
+	Verifier string
+	
+	pollResult chan *line.LoginResult
+	pollErr    chan error
+	polling    bool
+	mu         sync.Mutex
+}
+
+var _ bridgev2.LoginProcessUserInput = (*LineEmailLogin)(nil)
+
+func (ll *LineEmailLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
+	return &bridgev2.LoginStep{
+		Type:         bridgev2.LoginStepTypeUserInput,
+		StepID:       "fi.mau.line.enter_creds",
+		Instructions: "Please enter your LINE email and password.",
+		UserInputParams: &bridgev2.LoginUserInputParams{
+			Fields: []bridgev2.LoginInputDataField{
+				{
+					Type: bridgev2.LoginInputFieldTypeUsername,
+					ID:   "email",
+					Name: "Email",
+				},
+				{
+					Type: bridgev2.LoginInputFieldTypePassword,
+					ID:   "password",
+					Name: "Password",
+				},
+			},
+		},
+	}, nil
+}
+
+func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
+	if ll.Verifier != "" {
+		ll.mu.Lock()
+		defer ll.mu.Unlock()
+
+		if !ll.polling {
+			ll.polling = true
+			ll.pollResult = make(chan *line.LoginResult, 1)
+			ll.pollErr = make(chan error, 1)
+
+			go func() {
+				client := line.NewClient("")
+				res, err := client.WaitForLogin(ll.Verifier)
+				if err != nil {
+					ll.pollErr <- err
+				} else {
+					ll.pollResult <- res
+				}
+			}()
+		}
+
+		select {
+		case res := <-ll.pollResult:
+			if res.AuthToken != "" {
+				return ll.finishLogin(ctx, res.AuthToken)
+			}
+			
+		case err := <-ll.pollErr:
+			ll.polling = false
+			return nil, fmt.Errorf("verification failed: %w", err)
+			
+		default:
+			// No result yet, return waiting step
+		}
+
+		return &bridgev2.LoginStep{
+			Type:         bridgev2.LoginStepTypeUserInput,
+			StepID:       "fi.mau.line.wait_verification",
+			Instructions: "Waiting for verification... Please check your device.\n\nClick 'Continue' to check status.",
+			UserInputParams: &bridgev2.LoginUserInputParams{
+				Fields: []bridgev2.LoginInputDataField{
+					{
+						Type:        bridgev2.LoginInputFieldTypePassword,
+						ID:          "dummy",
+						Name:        "Action",
+						Description: "Press Enter to check again",
+					},
+				},
+			},
+		}, nil
+	}
+
+	if input["email"] != "" {
+		ll.Email = input["email"]
+		ll.Password = input["password"]
+	}
+
+	if ll.Email == "" || ll.Password == "" {
+		return nil, fmt.Errorf("email and password are required")
+	}
+
+	client := line.NewClient("")
+	res, err := client.Login(ll.Email, ll.Password)
+	if err != nil {
+		return nil, fmt.Errorf("login failed: %w", err)
+	}
+
+	if res.AuthToken != "" {
+		return ll.finishLogin(ctx, client.AccessToken)
+	}
+
+	if (res.Type == 3 || res.Type == 0) && res.Verifier != "" {
+		ll.Verifier = res.Verifier
+		instructions := "A verification request has been sent to your LINE device."
+		pin := res.Pin
+		if res.PinCode != "" {
+			pin = res.PinCode
+		}
+		if pin != "" {
+			instructions += fmt.Sprintf("\n\n**Please enter this PIN code on your mobile device: %s**", pin)
+		}
+		instructions += "\n\nAfter entering the code (or approving), click 'Continue'."
+
+		return &bridgev2.LoginStep{
+			Type:         bridgev2.LoginStepTypeUserInput,
+			StepID:       "fi.mau.line.wait_verification",
+			Instructions: instructions,
+			UserInputParams: &bridgev2.LoginUserInputParams{
+				Fields: []bridgev2.LoginInputDataField{
+					{
+						Type:        bridgev2.LoginInputFieldTypePassword,
+						ID:          "dummy",
+						Name:        "Action",
+						Description: "Press Enter to check login status",
+					},
+				},
+			},
+		}, nil
+	}
+
+	if res.Certificate != "" {
+		return &bridgev2.LoginStep{
+			Type:         bridgev2.LoginStepTypeUserInput,
+			StepID:       "fi.mau.line.enter_pin",
+			Instructions: fmt.Sprintf("Please open the LINE app on your mobile device and enter this PIN code: **%s**\n\nAfter entering the code, click 'Continue' below.", res.Certificate),
+			UserInputParams: &bridgev2.LoginUserInputParams{
+				Fields: []bridgev2.LoginInputDataField{
+					{
+						Type:        bridgev2.LoginInputFieldTypePassword, // hidden dummy field
+						ID:          "dummy",
+						Name:        "Hidden",
+						Description: "Press Enter to continue",
+					},
+				},
+			},
+		}, nil
+	}
+
+	return nil, fmt.Errorf("login incomplete but no PIN found in response (Type: %d, Msg: %s)", res.Type, res.Message)
+}
+
+func (ll *LineEmailLogin) finishLogin(ctx context.Context, token string) (*bridgev2.LoginStep, error) {
+	client := line.NewClient(token)
+	_, err := client.GetProfile()
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify token: %w", err)
+	}
+
+	detectedLineID := networkid.UserLoginID("line_user_" + fmt.Sprint(time.Now().Unix()))
+
+	ul, err := ll.User.NewLogin(ctx, &database.UserLogin{
+		ID:         detectedLineID,
+		RemoteName: "LINE User", // TODO: use profile name
+		Metadata: &UserLoginMetadata{
+			AccessToken: token,
+			Email:       ll.Email,
+			Password:    ll.Password,
+		},
+	}, &bridgev2.NewLoginParams{
+		LoadUserLogin: func(ctx context.Context, login *bridgev2.UserLogin) error {
+			login.Client = &LineClient{
+				UserLogin:   login,
+				AccessToken: token,
+				HTTPClient:  &http.Client{Timeout: 10 * time.Second},
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create user login: %w", err)
+	}
+
+	go ul.Client.Connect(context.Background())
+
+	return &bridgev2.LoginStep{
+		Type:           bridgev2.LoginStepTypeComplete,
+		StepID:         "fi.mau.line.complete",
+		Instructions:   "Successfully logged in",
+		CompleteParams: &bridgev2.LoginCompleteParams{UserLoginID: ul.ID, UserLogin: ul},
+	}, nil
+}
+
+func (ll *LineEmailLogin) Cancel() {}
