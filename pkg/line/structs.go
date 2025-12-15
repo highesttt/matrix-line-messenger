@@ -78,8 +78,8 @@ type LoginPollingResult struct {
 			E2EEVersion       string `json:"e2eeVersion"`
 			KeyID             string `json:"keyId"`
 			PublicKey         string `json:"publicKey"`
-			AuthToken         string `json:"authToken"`     // Sometimes here
-			Certificate       string `json:"certificate"`   // Sometimes here
+			AuthToken         string `json:"authToken"`   // Sometimes here
+			Certificate       string `json:"certificate"` // Sometimes here
 			PinCode           string `json:"pinCode"`
 		} `json:"metadata"`
 	} `json:"result"`

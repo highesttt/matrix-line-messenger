@@ -210,3 +210,43 @@ func (c *Client) callRPC(service, method string, args ...interface{}) ([]byte, e
 
 	return respBody, nil
 }
+
+// postWithHMAC is a small helper for non-standard RPC endpoints that still expect
+// the same headers and HMAC signature as the Talk endpoints.
+func (c *Client) postWithHMAC(fullURL string, body []byte) ([]byte, error) {
+	req, err := http.NewRequest("POST", fullURL, bytes.NewBuffer(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("x-line-chrome-version", ExtensionVersion)
+	req.Header.Set("x-line-application", "CHROMEOS\t3.7.1\tChrome_OS\t1")
+	req.Header.Set("x-lal", "en_US")
+
+	hmacRunner, err := gen.GetRunner()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get HMAC runner: %w", err)
+	}
+
+	path := strings.Split(fullURL, "https://line-chrome-gw.line-apps.com")[1]
+	signature, err := hmacRunner.GetSignature(path, string(body), c.AccessToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate HMAC signature: %w", err)
+	}
+	req.Header.Set("x-hmac", signature)
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return io.ReadAll(resp.Body)
+}

@@ -131,7 +131,7 @@ func (r *Runner) run() error {
 
 			if res.Signature != "" {
 				r.sigCh <- res.Signature
-			} else if res.Pin != "" {
+			} else if res.Secret != "" || res.Pin != "" || res.PublicKeyHex != "" {
 				r.secCh <- &SecretResult{
 					Secret:       res.Secret,
 					Pin:          res.Pin,

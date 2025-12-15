@@ -62,6 +62,40 @@ async function run() {
 	try {
 		const { SecureKey, Hmac, Curve25519Key } = await init();
 
+		// Helper: generate PIN-wrapped secret for loginV2
+		const generateLoginSecret = () => {
+			const generatePin = () => {
+				const limit = 4_294_000_000; // floor(2^32 / 1e6) * 1e6 to avoid modulo bias
+				while (true) {
+					const n = crypto.randomBytes(4).readUInt32BE(0);
+					if (n < limit) return String(n % 1_000_000).padStart(6, "0");
+				}
+			};
+			const pin = generatePin();
+
+			const keyPair = Curve25519Key.generate(true);
+			const pubKey = Buffer.from(keyPair.getPublicKey());
+
+			// AES-256-CBC per 16-byte block, zero IV, take first block only (matches LINE extension)
+			const aesKey = crypto.createHash("sha256").update(pin).digest();
+			const iv = Buffer.alloc(16, 0);
+			const encryptBlock = (block) => {
+				const cipher = crypto.createCipheriv("aes-256-cbc", aesKey, iv);
+				const out = Buffer.concat([cipher.update(block), cipher.final()]);
+				return out.subarray(0, 16);
+			};
+			const secretBytes = Buffer.concat([
+				encryptBlock(pubKey.subarray(0, 16)),
+				encryptBlock(pubKey.subarray(16, 32)),
+			]);
+
+			return {
+				pin,
+				secret: secretBytes.toString("base64"),
+				publicKeyHex: pubKey.toString("hex"),
+			};
+		};
+
 		const rl = readline.createInterface({
 			input: process.stdin,
 			terminal: false,
@@ -81,8 +115,23 @@ async function run() {
 
 			try {
 				if (type === "e2ee") {
-					// TODO: Implement secret generation
-
+					const result = generateLoginSecret();
+					process.stdout.write(
+						JSON.stringify({
+							secret: result.secret,
+							pin: result.pin,
+							publicKeyHex: result.publicKeyHex,
+						}) + "\n"
+					);
+				} else if (type === "qr" || type === "qr_secret") {
+					const result = generateQrSecret();
+					process.stdout.write(
+						JSON.stringify({
+							secret: result.secret,
+							pin: result.pin,
+							publicKeyHex: result.publicKeyHex,
+						}) + "\n"
+					);
 				} else if (type === "sign") {
 					let { reqPath, body, accessToken } = query;
 					
