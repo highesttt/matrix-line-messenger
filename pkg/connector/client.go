@@ -67,6 +67,7 @@ func (lc *LineClient) Connect(ctx context.Context) {
 		}
 	}
 
+	lc.UserLogin.Bridge.Log.Info().Int("token_len", len(lc.AccessToken)).Msg("LINE client connected; notifying bridge")
 	lc.UserLogin.BridgeState.Send(status.BridgeState{
 		StateEvent: status.StateConnected,
 	})

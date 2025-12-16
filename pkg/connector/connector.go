@@ -16,6 +16,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/bridgev2/status"
 )
 
 type LineConnector struct {
@@ -439,6 +440,7 @@ func (ll *LineEmailLogin) finishLogin(ctx context.Context, token string) (*bridg
 	}
 
 	go ul.Client.Connect(context.Background())
+	ul.BridgeState.Send(status.BridgeState{StateEvent: status.StateConnected})
 
 	return &bridgev2.LoginStep{
 		Type:           bridgev2.LoginStepTypeComplete,

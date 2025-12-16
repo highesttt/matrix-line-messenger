@@ -219,9 +219,9 @@ func (c *Client) callRPC(service, method string, args ...interface{}) ([]byte, e
 	req.Header.Set("x-line-chrome-version", ExtensionVersion)
 	req.Header.Set("x-line-application", "CHROMEOS\t3.7.1\tChrome_OS\t1")
 	req.Header.Set("x-lal", "en_US")
-
 	if c.AccessToken != "" {
 		req.Header.Set("x-line-access", c.AccessToken)
+		req.Header.Set("Cookie", fmt.Sprintf("lct=%s", c.AccessToken))
 	}
 
 	hmacRunner, err := gen.GetRunner()
@@ -311,6 +311,10 @@ func (c *Client) postWithHMAC(fullURL string, body []byte) ([]byte, error) {
 	req.Header.Set("x-line-chrome-version", ExtensionVersion)
 	req.Header.Set("x-line-application", "CHROMEOS\t3.7.1\tChrome_OS\t1")
 	req.Header.Set("x-lal", "en_US")
+	if c.AccessToken != "" {
+		req.Header.Set("x-line-access", c.AccessToken)
+		req.Header.Set("Cookie", fmt.Sprintf("lct=%s", c.AccessToken))
+	}
 
 	hmacRunner, err := gen.GetRunner()
 	if err != nil {
