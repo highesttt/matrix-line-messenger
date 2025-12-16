@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,6 +33,8 @@ type LineClient struct {
 
 	reqSeqMu    sync.Mutex
 	sentReqSeqs map[int]time.Time
+
+	contactCache map[string]line.Contact
 }
 
 var _ bridgev2.NetworkAPI = (*LineClient)(nil)
@@ -39,6 +42,9 @@ var _ bridgev2.NetworkAPI = (*LineClient)(nil)
 func (lc *LineClient) Connect(ctx context.Context) {
 	if lc.peerKeys == nil {
 		lc.peerKeys = make(map[string]peerKeyInfo)
+	}
+	if lc.contactCache == nil {
+		lc.contactCache = make(map[string]line.Contact)
 	}
 	lc.reqSeqMu.Lock()
 	if lc.sentReqSeqs == nil {
@@ -130,7 +136,51 @@ func (lc *LineClient) Connect(ctx context.Context) {
 		}
 	}
 
+	go lc.syncChats(ctx)
 	go lc.pollLoop(ctx)
+}
+
+func (lc *LineClient) syncChats(ctx context.Context) {
+	client := line.NewClient(lc.AccessToken)
+	resp, err := client.GetMessageBoxes()
+	if err != nil {
+		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to sync chats")
+		return
+	}
+
+	var data struct {
+		Data struct {
+			MessageBoxes []struct {
+				ID string `json:"id"`
+			} `json:"messageBoxes"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &data); err != nil {
+		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to parse message boxes")
+		return
+	}
+
+	for _, mb := range data.Data.MessageBoxes {
+		portalKey := networkid.PortalKey{ID: makePortalID(mb.ID), Receiver: lc.UserLogin.ID}
+		portal, err := lc.UserLogin.Bridge.GetPortalByKey(ctx, portalKey)
+		if err != nil || portal == nil {
+			continue
+		}
+
+		info, err := lc.GetChatInfo(ctx, portal)
+		if err != nil {
+			continue
+		}
+
+		lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.ChatResync{
+			EventMeta: simplevent.EventMeta{
+				Type:      bridgev2.RemoteEventChatResync,
+				PortalKey: portalKey,
+				Timestamp: time.Now(),
+			},
+			ChatInfo: info,
+		})
+	}
 }
 
 func (lc *LineClient) pollLoop(ctx context.Context) {
@@ -303,7 +353,19 @@ func (lc *LineClient) IsThisUser(ctx context.Context, userID networkid.UserID) b
 }
 
 func (lc *LineClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+	contact := lc.getContact(string(portal.ID))
+	var avatar *bridgev2.Avatar
+	if contact.PicturePath != "" {
+		avatar = &bridgev2.Avatar{
+			ID: networkid.AvatarID(contact.PicturePath),
+			Get: func(ctx context.Context) ([]byte, error) {
+				return lc.GetAvatar(ctx, networkid.AvatarID(contact.PicturePath))
+			},
+		}
+	}
 	return &bridgev2.ChatInfo{
+		Name:   &contact.DisplayName,
+		Avatar: avatar,
 		Members: &bridgev2.ChatMemberList{
 			IsFull: true,
 			Members: []bridgev2.ChatMember{
@@ -328,7 +390,36 @@ func (lc *LineClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) 
 }
 
 func (lc *LineClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
-	return &bridgev2.UserInfo{Identifiers: []string{string(ghost.ID)}, Name: ptr.Ptr(string(ghost.ID))}, nil
+	contact := lc.getContact(string(ghost.ID))
+	var avatar *bridgev2.Avatar
+	if contact.PicturePath != "" {
+		avatar = &bridgev2.Avatar{
+			ID: networkid.AvatarID(contact.PicturePath),
+			Get: func(ctx context.Context) ([]byte, error) {
+				return lc.GetAvatar(ctx, networkid.AvatarID(contact.PicturePath))
+			},
+		}
+	}
+	return &bridgev2.UserInfo{
+		Identifiers: []string{string(ghost.ID)},
+		Name:        &contact.DisplayName,
+		Avatar:      avatar,
+	}, nil
+}
+
+func (lc *LineClient) getContact(mid string) line.Contact {
+	if contact, ok := lc.contactCache[mid]; ok {
+		return contact
+	}
+	client := line.NewClient(lc.AccessToken)
+	res, err := client.GetContactsV2([]string{mid})
+	if err == nil && res != nil && res.Contacts != nil {
+		if wrapper, ok := res.Contacts[mid]; ok {
+			lc.contactCache[mid] = wrapper.Contact
+			return wrapper.Contact
+		}
+	}
+	return line.Contact{Mid: mid, DisplayName: mid}
 }
 
 type peerKeyInfo struct {
@@ -490,4 +581,14 @@ func (lc *LineClient) ResolveIdentifier(ctx context.Context, identifier string, 
 		UserInfo: ghostInfo,
 		Chat:     &bridgev2.CreateChatResponse{Portal: portal, PortalKey: portalID, PortalInfo: portalInfo},
 	}, nil
+}
+
+func (lc *LineClient) GetAvatar(ctx context.Context, id networkid.AvatarID) ([]byte, error) {
+	url := fmt.Sprintf("https://profile.line-scdn.net%s", id)
+	resp, err := lc.HTTPClient.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
 }

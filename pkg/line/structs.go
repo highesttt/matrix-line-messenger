@@ -133,3 +133,22 @@ type EncryptedIdentityV3 struct {
 	KDFParameter1 string `json:"kdfParameter1"`
 	KDFParameter2 string `json:"kdfParameter2"`
 }
+
+type GetContactsV2Request struct {
+	TargetUserMids []string `json:"targetUserMids"`
+}
+
+type ContactsResponse struct {
+	Contacts map[string]ContactWrapper `json:"contacts"`
+}
+
+type ContactWrapper struct {
+	Contact Contact `json:"contact"`
+}
+
+type Contact struct {
+	Mid           string `json:"mid"`
+	DisplayName   string `json:"displayName"`
+	StatusMessage string `json:"statusMessage"`
+	PicturePath   string `json:"picturePath"`
+}

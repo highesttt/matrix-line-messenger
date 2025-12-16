@@ -265,3 +265,36 @@ func (c *Client) SendMessage(reqSeq int64, msg *Message) error {
 	return nil
 }
 
+// GetContactsV2 fetches contact details for a list of MIDs.
+func (c *Client) GetContactsV2(mids []string) (*ContactsResponse, error) {
+	req := GetContactsV2Request{TargetUserMids: mids}
+	resp, err := c.callRPC("TalkService", "getContactsV2", req, 2)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int              `json:"code"`
+		Message string           `json:"message"`
+		Data    ContactsResponse `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("getContactsV2 failed: %s", wrapper.Message)
+	}
+	return &wrapper.Data, nil
+}
+
+func (c *Client) GetMessageBoxes() ([]byte, error) {
+	reqStruct := map[string]interface{}{
+		"activeOnly":                     true,
+		"unreadOnly":                     false,
+		"messageBoxCountLimit":           100,
+		"withUnreadCount":                true,
+		"lastMessagesPerMessageBoxCount": 1,
+	}
+	// "2" is the syncReason
+	return c.callRPC("TalkService", "getMessageBoxes", reqStruct, 2)
+}
+
