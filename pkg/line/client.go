@@ -135,10 +135,19 @@ func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 		time.Sleep(2 * time.Second)
 	}
 
-	if wrapper.Data.Result.Metadata.AuthToken != "" || wrapper.Data.Result.Metadata.Certificate != "" {
+	meta := wrapper.Data.Result.Metadata
+
+	// Send confirmE2EELogin when the encrypted key chain is provided (post-LF1 step)
+	if meta.EncryptedKeyChain != "" && meta.PublicKey != "" {
+		if err := c.ConfirmE2EELogin(verifier, meta.PublicKey, meta.EncryptedKeyChain); err != nil {
+			fmt.Printf("[DEBUG] confirmE2EELogin error: %v\n", err)
+		}
+	}
+
+	if meta.AuthToken != "" || meta.Certificate != "" {
 		return &LoginResult{
-			AuthToken:   wrapper.Data.Result.Metadata.AuthToken,
-			Certificate: wrapper.Data.Result.Metadata.Certificate,
+			AuthToken:   meta.AuthToken,
+			Certificate: meta.Certificate,
 		}, nil
 	}
 
@@ -209,6 +218,54 @@ func (c *Client) callRPC(service, method string, args ...interface{}) ([]byte, e
 	}
 
 	return respBody, nil
+}
+
+// ConfirmE2EELogin completes the E2EE handshake after LF1 by hashing the encrypted key
+// chain and posting it alongside the verifier.
+func (c *Client) ConfirmE2EELogin(verifier, serverPublicKeyB64, encryptedKeyChainB64 string) error {
+	runner, err := gen.GetRunner()
+	if err != nil {
+		return fmt.Errorf("failed to init runner: %w", err)
+	}
+
+	fmt.Printf(
+		"[DEBUG] confirmE2EELogin start: verifier=%s serverPublicKey=%s encryptedKeyChain=%s\n",
+		verifier,
+		serverPublicKeyB64,
+		encryptedKeyChainB64,
+	)
+
+	hash, err := runner.GenerateConfirmHash(serverPublicKeyB64, encryptedKeyChainB64)
+	if err != nil {
+		return fmt.Errorf("failed to derive confirm hash: %w", err)
+	}
+	fmt.Printf("[DEBUG] confirmE2EELogin derived hash: %s\n", hash)
+
+	bodyBytes, err := json.Marshal([]string{verifier, hash})
+	if err != nil {
+		return fmt.Errorf("failed to marshal confirm payload: %w", err)
+	}
+
+	url := "https://line-chrome-gw.line-apps.com/api/talk/thrift/Talk/AuthService/confirmE2EELogin"
+	respBytes, err := c.postWithHMAC(url, bodyBytes)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("[DEBUG] confirmE2EELogin response raw: %s\n", string(respBytes))
+
+	var wrapper struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    string `json:"data"`
+	}
+	if err := json.Unmarshal(respBytes, &wrapper); err != nil {
+		return fmt.Errorf("failed to parse confirmE2EELogin response: %w", err)
+	}
+	if wrapper.Code != 0 {
+		return fmt.Errorf("confirmE2EELogin failed: %s", wrapper.Message)
+	}
+
+	return nil
 }
 
 // postWithHMAC is a small helper for non-standard RPC endpoints that still expect

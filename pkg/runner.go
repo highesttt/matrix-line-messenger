@@ -31,10 +31,12 @@ type Runner struct {
 }
 
 type CommandRequest struct {
-	Type        string `json:"type"`
-	ReqPath     string `json:"reqPath"`
-	Body        string `json:"body"`
-	AccessToken string `json:"accessToken,omitempty"`
+	Type              string `json:"type"`
+	ReqPath           string `json:"reqPath"`
+	Body              string `json:"body"`
+	AccessToken       string `json:"accessToken,omitempty"`
+	ServerPublicKey   string `json:"serverPublicKey,omitempty"`
+	EncryptedKeyChain string `json:"encryptedKeyChain,omitempty"`
 }
 
 type CommandResponse struct {
@@ -42,6 +44,7 @@ type CommandResponse struct {
 	Secret       string `json:"secret,omitempty"`
 	Pin          string `json:"pin,omitempty"`
 	PublicKeyHex string `json:"publicKeyHex,omitempty"`
+	Hash         string `json:"hash,omitempty"`
 	Error        string `json:"error,omitempty"`
 }
 
@@ -49,6 +52,7 @@ type SecretResult struct {
 	Secret       string `json:"secret"`
 	Pin          string `json:"pin"`
 	PublicKeyHex string `json:"publicKeyHex"`
+	Hash         string `json:"hash"`
 }
 
 var (
@@ -131,11 +135,12 @@ func (r *Runner) run() error {
 
 			if res.Signature != "" {
 				r.sigCh <- res.Signature
-			} else if res.Secret != "" || res.Pin != "" || res.PublicKeyHex != "" {
+			} else if res.Secret != "" || res.Pin != "" || res.PublicKeyHex != "" || res.Hash != "" {
 				r.secCh <- &SecretResult{
 					Secret:       res.Secret,
 					Pin:          res.Pin,
 					PublicKeyHex: res.PublicKeyHex,
+					Hash:         res.Hash,
 				}
 			}
 		}
@@ -221,5 +226,46 @@ func (r *Runner) GenerateE2EESecret() (*SecretResult, error) {
 		return res, nil
 	case err := <-r.errch:
 		return nil, err
+	}
+}
+
+// GenerateConfirmHash derives the hash key chain for confirmE2EELogin using the
+// previously generated login key pair (must be generated via GenerateE2EESecret first).
+func (r *Runner) GenerateConfirmHash(serverPublicKeyB64, encryptedKeyChainB64 string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	req := CommandRequest{
+		Type:              "confirm_hash",
+		ServerPublicKey:   serverPublicKeyB64,
+		EncryptedKeyChain: encryptedKeyChainB64,
+	}
+
+	reqBytes, err := json.Marshal(req)
+	if err != nil {
+		return "", err
+	}
+
+	_, err = r.stdin.Write(append(reqBytes, '\n'))
+	if err != nil {
+		return "", err
+	}
+
+	select {
+	case res := <-r.secCh:
+		if res.Hash != "" {
+			return res.Hash, nil
+		}
+		if res.Secret != "" {
+			return res.Secret, nil
+		}
+		if res.Pin != "" {
+			return res.Pin, nil
+		}
+		return res.PublicKeyHex, nil
+	case err := <-r.errch:
+		return "", err
+	case sig := <-r.sigCh:
+		return sig, nil
 	}
 }

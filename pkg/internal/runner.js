@@ -5,7 +5,9 @@ import readline from "readline";
 import crypto from "crypto";
 
 const [, , wasmPath] = process.argv;
-const keyStr = process.env.SECURE_KEY || "wODdrvWqmdP4Zliay-iF3cz3KZcK0ekrial868apg06TXeCo7A1hIQO0ESElHg6D";
+const keyStr =
+	process.env.SECURE_KEY ||
+	"wODdrvWqmdP4Zliay-iF3cz3KZcK0ekrial868apg06TXeCo7A1hIQO0ESElHg6D";
 const clientVersion = process.env.CLIENT_VERSION || "3.7.1";
 
 if (!keyStr || !clientVersion) {
@@ -58,9 +60,13 @@ async function init() {
 	}
 }
 
+// Persist the login key so we can derive the confirm hash after LF1
+let loginCurveKey = null;
+
 async function run() {
 	try {
 		const { SecureKey, Hmac, Curve25519Key } = await init();
+		const secureKey = SecureKey.loadToken(keyStr);
 
 		// Helper: generate PIN-wrapped secret for loginV2
 		const generateLoginSecret = () => {
@@ -68,32 +74,60 @@ async function run() {
 				const limit = 4_294_000_000; // floor(2^32 / 1e6) * 1e6 to avoid modulo bias
 				while (true) {
 					const n = crypto.randomBytes(4).readUInt32BE(0);
-					if (n < limit) return String(n % 1_000_000).padStart(6, "0");
+					if (n < limit)
+						return String(n % 1_000_000).padStart(6, "0");
 				}
 			};
 			const pin = generatePin();
 
-			const keyPair = Curve25519Key.generate(true);
-			const pubKey = Buffer.from(keyPair.getPublicKey());
+			loginCurveKey = new Curve25519Key(secureKey);
+			const pubRaw = Buffer.from(loginCurveKey.getPublicKey());
 
 			// AES-256-CBC per 16-byte block, zero IV, take first block only (matches LINE extension)
 			const aesKey = crypto.createHash("sha256").update(pin).digest();
 			const iv = Buffer.alloc(16, 0);
 			const encryptBlock = (block) => {
 				const cipher = crypto.createCipheriv("aes-256-cbc", aesKey, iv);
-				const out = Buffer.concat([cipher.update(block), cipher.final()]);
+				const out = Buffer.concat([
+					cipher.update(block),
+					cipher.final(),
+				]);
 				return out.subarray(0, 16);
 			};
 			const secretBytes = Buffer.concat([
-				encryptBlock(pubKey.subarray(0, 16)),
-				encryptBlock(pubKey.subarray(16, 32)),
+				encryptBlock(pubRaw.subarray(0, 16)),
+				encryptBlock(pubRaw.subarray(16, 32)),
 			]);
 
 			return {
 				pin,
 				secret: secretBytes.toString("base64"),
-				publicKeyHex: pubKey.toString("hex"),
+				publicKeyHex: pubRaw.toString("hex"),
 			};
+		};
+
+		// Helper: derive hash key chain for confirmE2EELogin
+		const generateHashKeyChain = (serverPubB64, encryptedKeyChainB64) => {
+			if (!loginCurveKey) {
+				throw new Error("login key not initialized");
+			}
+
+			const serverRaw = Buffer.from(serverPubB64, "base64");
+			const raw32 =
+				serverRaw.length === 32
+					? serverRaw
+					: serverRaw.length > 32
+					? serverRaw.subarray(serverRaw.length - 32)
+					: (() => {
+							throw new Error("invalid server public key length");
+					  })();
+
+			const channel = loginCurveKey.createChannel(raw32);
+			const encKeyChain = Buffer.from(encryptedKeyChainB64, "base64");
+			const hashBytes =
+				channel.generateHashKeyChainToConfirmE2EE(encKeyChain);
+
+			return Buffer.from(hashBytes).toString("base64");
 		};
 
 		const rl = readline.createInterface({
@@ -107,11 +141,13 @@ async function run() {
 				query = JSON.parse(queryStr);
 			} catch (e) {
 				console.error("Failed to parse query:", e);
-				process.stdout.write(JSON.stringify({ error: e.message }) + "\n");
+				process.stdout.write(
+					JSON.stringify({ error: e.message }) + "\n"
+				);
 				return;
 			}
 
-			const type = query.type || "sign"; 
+			const type = query.type || "sign";
 
 			try {
 				if (type === "e2ee") {
@@ -123,6 +159,13 @@ async function run() {
 							publicKeyHex: result.publicKeyHex,
 						}) + "\n"
 					);
+				} else if (type === "confirm_hash") {
+					const { serverPublicKey, encryptedKeyChain } = query;
+					const hash = generateHashKeyChain(
+						serverPublicKey,
+						encryptedKeyChain
+					);
+					process.stdout.write(JSON.stringify({ hash }) + "\n");
 				} else if (type === "qr" || type === "qr_secret") {
 					const result = generateQrSecret();
 					process.stdout.write(
@@ -134,7 +177,7 @@ async function run() {
 					);
 				} else if (type === "sign") {
 					let { reqPath, body, accessToken } = query;
-					
+
 					if (typeof reqPath !== "string") {
 						throw new Error("Invalid sign query format");
 					}
@@ -161,7 +204,9 @@ async function run() {
 					};
 
 					const secureKey = SecureKey.loadToken(keyStr);
-					const clientVersionHash = await calculateSha256(clientVersion);
+					const clientVersionHash = await calculateSha256(
+						clientVersion
+					);
 					const accessTokenHash = await calculateSha256(accessToken);
 
 					const derivedKey = secureKey.deriveKey(
@@ -173,17 +218,22 @@ async function run() {
 					const dataToSign = new TextEncoder().encode(reqPath + body);
 					const signatureBytes = hmac.digest(dataToSign);
 
-					const signature = Buffer.from(signatureBytes).toString("base64");
+					const signature =
+						Buffer.from(signatureBytes).toString("base64");
 
-					process.stdout.write(JSON.stringify({
-						signature: signature,
-					}) + "\n");
+					process.stdout.write(
+						JSON.stringify({
+							signature: signature,
+						}) + "\n"
+					);
 				} else {
 					throw new Error("Unknown command type: " + type);
 				}
 			} catch (e) {
 				console.error("Error processing request:", e);
-				process.stdout.write(JSON.stringify({ error: e.message }) + "\n");
+				process.stdout.write(
+					JSON.stringify({ error: e.message }) + "\n"
+				);
 			}
 		};
 
