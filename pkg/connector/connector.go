@@ -158,21 +158,19 @@ func (ll *LineLogin) SubmitUserInput(ctx context.Context, input map[string]strin
 
 	// Verify the token works by fetching profile
 	client := line.NewClient(token)
-	// TODO: Parse profile to get actual Line ID & Username
-	_, err := client.GetProfile()
+	profile, err := client.GetProfile()
 	if err != nil {
 		return nil, fmt.Errorf("failed to verify token: %w", err)
 	}
 
-	// Placeholder ID: will be replaced when getProfile is properly parsed
-	detectedLineID := networkid.UserLoginID("line_user_" + fmt.Sprint(time.Now().Unix()))
+	detectedLineID := networkid.UserLoginID(profile.Mid)
 
 	ul, err := ll.User.NewLogin(ctx, &database.UserLogin{
-		// TODO: get actual Line ID & Username when profile parsing is implemented
 		ID:         detectedLineID,
-		RemoteName: "LINE User",
+		RemoteName: profile.DisplayName,
 		Metadata: &UserLoginMetadata{
 			AccessToken: token,
+			Mid:         profile.Mid,
 		},
 	}, &bridgev2.NewLoginParams{
 		LoadUserLogin: func(ctx context.Context, login *bridgev2.UserLogin) error {
@@ -371,9 +369,14 @@ func (ll *LineEmailLogin) finishLogin(ctx context.Context, res *line.LoginResult
 	}
 
 	client := line.NewClient(token)
-	_, err := client.GetProfile()
+	profile, err := client.GetProfile()
 	if err != nil {
 		return nil, fmt.Errorf("failed to verify token: %w", err)
+	}
+
+	displayName := profile.DisplayName
+	if displayName == "" {
+		displayName = "LINE User"
 	}
 
 	meta := &UserLoginMetadata{AccessToken: token, Email: ll.Email, Password: ll.Password, Mid: res.Mid}
@@ -394,11 +397,11 @@ func (ll *LineEmailLogin) finishLogin(ctx context.Context, res *line.LoginResult
 		}
 	}
 
-	detectedLineID := networkid.UserLoginID("line_user_" + fmt.Sprint(time.Now().Unix()))
+	detectedLineID := networkid.UserLoginID(profile.Mid)
 
 	ul, err := ll.User.NewLogin(ctx, &database.UserLogin{
 		ID:         detectedLineID,
-		RemoteName: "LINE User", // TODO: use profile name
+		RemoteName: displayName,
 		Metadata:   meta,
 	}, &bridgev2.NewLoginParams{
 		LoadUserLogin: func(ctx context.Context, login *bridgev2.UserLogin) error {

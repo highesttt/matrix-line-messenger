@@ -17,6 +17,22 @@ type LoginRequest struct {
 	E2EEVersion      int    `json:"e2eeVersion"`
 }
 
+type Profile struct {
+	Mid                          string            `json:"mid"`
+	UserID                       string            `json:"userid"`
+	RegionCode                   string            `json:"regionCode"`
+	DisplayName                  string            `json:"displayName"`
+	StatusMessage                string            `json:"statusMessage"`
+	AllowSearchByUserID          bool              `json:"allowSearchByUserid"`
+	AllowSearchByEmail           bool              `json:"allowSearchByEmail"`
+	PicturePath                  string            `json:"picturePath"`
+	StatusMessageContentMetadata map[string]string `json:"statusMessageContentMetadata"`
+	NFTProfile                   bool              `json:"nftProfile"`
+	ProfileID                    string            `json:"profileId"`
+	ProfileType                  int               `json:"profileType"`
+	CreatedTimeMillis            string            `json:"createdTimeMillis"`
+}
+
 type Operation struct {
 	Revision    json.Number `json:"revision"`
 	Type        int         `json:"type"` // 25=Send, 26=Receive

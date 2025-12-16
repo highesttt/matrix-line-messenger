@@ -71,8 +71,23 @@ func (c *Client) LoginV2WithVerifier(verifier string) (*LoginResult, error) {
 }
 
 // GetProfile fetches the user's profile information
-func (c *Client) GetProfile() ([]byte, error) {
-	return c.callRPC("TalkService", "getProfile", 2)
+func (c *Client) GetProfile() (*Profile, error) {
+	resp, err := c.callRPC("TalkService", "getProfile", 2)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int     `json:"code"`
+		Message string  `json:"message"`
+		Data    Profile `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("getProfile failed: %s", wrapper.Message)
+	}
+	return &wrapper.Data, nil
 }
 
 // GetEncryptedIdentityV3 fetches wrapped nonce and KDF params used to derive storage key.
