@@ -58,7 +58,7 @@ func (lc *LineConnector) GetName() bridgev2.BridgeName {
 	return bridgev2.BridgeName{
 		DisplayName:      "LINE",
 		NetworkURL:       "https://line.me",
-		NetworkIcon:      "mxc://maunium.net/FYuKJHaCrSeSpvBJfHwgYylP",
+		NetworkIcon:      "https://www.google.com/s2/favicons?domain=line.me&sz=256",
 		NetworkID:        "line",
 		BeeperBridgeType: "github.com/highesttt/mautrix-line-messenger",
 		DefaultPort:      29322,

@@ -11,9 +11,9 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
 - [x] Basic messaging (encrypted text messages)
 - [x] Actual login via mail/password (instead of access token)
-- [ ] Get own profile details (ID & Name)
+- [x] Get own profile details (ID & Name)
 - [x] Decrypt messages
-- [ ] Decrypt usernames
+- [x] Decrypt usernames
 - [x] Sending messages
 - [ ] Prefetch chats
 - [ ] Group chats
