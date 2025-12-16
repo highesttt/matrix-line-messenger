@@ -91,7 +91,7 @@ func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 	req.Header.Set("x-line-chrome-version", ExtensionVersion)
 	req.Header.Set("x-lal", "en_US")
 	req.Header["X-Line-Session-ID"] = []string{verifier}
-	req.Header["X-LST"] = []string{"110000"} // Long Polling Timeout?
+	req.Header["X-LST"] = []string{"110000"} // Long Polling Timeout
 
 	// Generate HMAC for Polling
 	hmacRunner, err := gen.GetRunner()
@@ -110,7 +110,7 @@ func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 	pollClient := &http.Client{Timeout: 120 * time.Second} // Increased timeout
 	resp, err := pollClient.Do(req)
 	if err != nil {
-		time.Sleep(2 * time.Second)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -122,7 +122,7 @@ func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 		Data    LoginPollingResult `json:"data"`
 	}
 	if err := json.Unmarshal(body, &wrapper); err != nil {
-		time.Sleep(2 * time.Second)
+		return nil, fmt.Errorf("failed to parse polling response: %w", err)
 	}
 
 	meta := wrapper.Data.Result.Metadata
@@ -148,7 +148,7 @@ func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 		}, nil
 	}
 
-	return nil, fmt.Errorf("polling timed out after 60 attempts")
+	return nil, fmt.Errorf("polling returned without success")
 }
 
 func (c *Client) GetRSAKeyInfo() (*RSAKeyInfo, error) {

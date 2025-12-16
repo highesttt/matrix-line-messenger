@@ -106,97 +106,14 @@ func (lc *LineConnector) LoadUserLogin(ctx context.Context, login *bridgev2.User
 
 func (lc *LineConnector) GetLoginFlows() []bridgev2.LoginFlow {
 	return []bridgev2.LoginFlow{{
-		Name:        "Auth Token",
-		Description: "Enter your LINE Auth Token (x-line-access header)",
-		ID:          "auth-token",
-	}, {
-		Name:        "Email & Password",
+		Name:        "Login",
 		Description: "Login with your LINE Email and Password",
-		ID:          "email-password",
 	}}
 }
 
 func (lc *LineConnector) CreateLogin(ctx context.Context, user *bridgev2.User, flowID string) (bridgev2.LoginProcess, error) {
-	switch flowID {
-	case "auth-token":
-		return &LineLogin{User: user}, nil
-	case "email-password":
-		return &LineEmailLogin{User: user}, nil
-	default:
-		return nil, fmt.Errorf("unknown login flow ID")
-	}
+	return &LineEmailLogin{User: user}, nil
 }
-
-type LineLogin struct {
-	User *bridgev2.User
-}
-
-var _ bridgev2.LoginProcessUserInput = (*LineLogin)(nil)
-
-func (ll *LineLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
-	return &bridgev2.LoginStep{
-		Type:         bridgev2.LoginStepTypeUserInput,
-		StepID:       "fi.mau.line.enter_token",
-		Instructions: "Please extract the 'x-line-access' header from a logged-in LINE Chrome extension session.",
-		UserInputParams: &bridgev2.LoginUserInputParams{
-			Fields: []bridgev2.LoginInputDataField{
-				{
-					Type:        bridgev2.LoginInputFieldTypePassword,
-					ID:          "token",
-					Name:        "Auth Token",
-					Description: "x-line-access header value",
-				},
-			},
-		},
-	}, nil
-}
-func (ll *LineLogin) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
-	token := input["token"]
-	if token == "" {
-		return nil, fmt.Errorf("token is empty")
-	}
-
-	// Verify the token works by fetching profile
-	client := line.NewClient(token)
-	profile, err := client.GetProfile()
-	if err != nil {
-		return nil, fmt.Errorf("failed to verify token: %w", err)
-	}
-
-	detectedLineID := networkid.UserLoginID(profile.Mid)
-
-	ul, err := ll.User.NewLogin(ctx, &database.UserLogin{
-		ID:         detectedLineID,
-		RemoteName: profile.DisplayName,
-		Metadata: &UserLoginMetadata{
-			AccessToken: token,
-			Mid:         profile.Mid,
-		},
-	}, &bridgev2.NewLoginParams{
-		LoadUserLogin: func(ctx context.Context, login *bridgev2.UserLogin) error {
-			login.Client = &LineClient{
-				UserLogin:   login,
-				AccessToken: token,
-				HTTPClient:  &http.Client{Timeout: 10 * time.Second},
-			}
-			return nil
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create user login: %w", err)
-	}
-
-	go ul.Client.Connect(context.Background())
-
-	return &bridgev2.LoginStep{
-		Type:           bridgev2.LoginStepTypeComplete,
-		StepID:         "fi.mau.line.complete",
-		Instructions:   "Successfully logged in",
-		CompleteParams: &bridgev2.LoginCompleteParams{UserLoginID: ul.ID, UserLogin: ul},
-	}, nil
-}
-
-func (ll *LineLogin) Cancel() {}
 
 type LineEmailLogin struct {
 	User     *bridgev2.User
@@ -236,54 +153,18 @@ func (ll *LineEmailLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error
 
 func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
 	if ll.Verifier != "" {
-		ll.mu.Lock()
-		defer ll.mu.Unlock()
-
-		if !ll.polling {
-			ll.polling = true
-			ll.pollResult = make(chan *line.LoginResult, 1)
-			ll.pollErr = make(chan error, 1)
-
-			go func() {
-				client := line.NewClient("")
-				res, err := client.WaitForLogin(ll.Verifier)
-				if err != nil {
-					ll.pollErr <- err
-				} else {
-					ll.pollResult <- res
-				}
-			}()
-		}
-
+		// User clicked "Continue" on the PIN screen. Wait for the background polling to finish.
 		select {
 		case res := <-ll.pollResult:
 			if res.AuthToken != "" {
 				return ll.finishLogin(ctx, res)
 			}
-
 		case err := <-ll.pollErr:
-			ll.polling = false
 			return nil, fmt.Errorf("verification failed: %w", err)
-
-		default:
-			// No result yet, return waiting step
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
-
-		return &bridgev2.LoginStep{
-			Type:         bridgev2.LoginStepTypeUserInput,
-			StepID:       "fi.mau.line.wait_verification",
-			Instructions: "Waiting for verification... Please check your device.\n\nClick 'Continue' to check status.",
-			UserInputParams: &bridgev2.LoginUserInputParams{
-				Fields: []bridgev2.LoginInputDataField{
-					{
-						Type:        bridgev2.LoginInputFieldTypePassword,
-						ID:          "dummy",
-						Name:        "Action",
-						Description: "Press Enter to check again",
-					},
-				},
-			},
-		}, nil
+		return nil, fmt.Errorf("unexpected end of polling")
 	}
 
 	if input["email"] != "" {
@@ -315,7 +196,23 @@ func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]
 		if pin != "" {
 			instructions += fmt.Sprintf("\n\n**Please enter this PIN code on your mobile device: %s**", pin)
 		}
-		instructions += "\n\nAfter entering the code (or approving), click 'Continue'."
+		instructions += "\n\nAfter entering the code (or approving), click 'Continue' to finish login."
+
+		// Start polling in background immediately so it's running while the user enters the PIN
+		ll.mu.Lock()
+		ll.polling = true
+		ll.pollResult = make(chan *line.LoginResult, 1)
+		ll.pollErr = make(chan error, 1)
+		go func() {
+			client := line.NewClient("")
+			res, err := client.WaitForLogin(ll.Verifier)
+			if err != nil {
+				ll.pollErr <- err
+			} else {
+				ll.pollResult <- res
+			}
+		}()
+		ll.mu.Unlock()
 
 		return &bridgev2.LoginStep{
 			Type:         bridgev2.LoginStepTypeUserInput,
@@ -324,10 +221,10 @@ func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]
 			UserInputParams: &bridgev2.LoginUserInputParams{
 				Fields: []bridgev2.LoginInputDataField{
 					{
-						Type:        bridgev2.LoginInputFieldTypePassword,
+						Type:        bridgev2.LoginInputFieldTypePassword, // hidden field just to have a submit button
 						ID:          "dummy",
 						Name:        "Action",
-						Description: "Press Enter to check login status",
+						Description: "Press Enter/Continue when done",
 					},
 				},
 			},
