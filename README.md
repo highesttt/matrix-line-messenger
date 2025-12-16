@@ -12,9 +12,9 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 - [x] Basic messaging (encrypted text messages)
 - [x] Actual login via mail/password (instead of access token)
 - [ ] Get own profile details (ID & Name)
-- [ ] Decrypt messages
+- [x] Decrypt messages
 - [ ] Decrypt usernames
-- [ ] Sending messages
+- [x] Sending messages
 - [ ] Prefetch chats
 - [ ] Group chats
 - [ ] Media messages (images, videos, voice notes, files)
@@ -27,4 +27,3 @@ Sign in via the [LINE Chrome extension](https://chromewebstore.google.com/detail
 1. Obtain a LINE access token via the LINE Chrome extension.
 2. Set up a Matrix homeserver and a Beeper instance with the Bridge V2 enabled.
 3. Add the mautrix-line-messenger bridge to Beeper and configure it with your LINE access token.
-
