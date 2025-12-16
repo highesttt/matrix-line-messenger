@@ -3,11 +3,11 @@ package connector
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/highesttt/mautrix-line-messenger/pkg/e2ee"
 	"github.com/highesttt/mautrix-line-messenger/pkg/line"
 	"github.com/rs/zerolog/hlog"
 	"go.mau.fi/util/configupgrade"
@@ -37,7 +37,6 @@ func (lc *LineConnector) Start(ctx context.Context) error {
 		return fmt.Errorf("public address of bridge not configured")
 	}
 	router := http.NewServeMux()
-	router.HandleFunc("POST /{loginID}/receive", lc.ReceiveMessage)
 	server.GetRouter().Handle("/_line/", exhttp.ApplyMiddleware(
 		router,
 		exhttp.StripPrefix("/_line"),
@@ -45,45 +44,6 @@ func (lc *LineConnector) Start(ctx context.Context) error {
 		requestlog.AccessLogger(requestlog.Options{TrustXForwardedFor: true}),
 	))
 	return nil
-}
-
-func (lc *LineConnector) ReceiveMessage(w http.ResponseWriter, r *http.Request) {
-	sig := r.Header.Get("X-Line-Signature")
-	if sig == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte("Missing signature header\n"))
-		return
-	}
-
-	loginID := r.PathValue("loginID")
-	login := lc.br.GetCachedUserLoginByID(networkid.UserLoginID(loginID))
-	if login == nil {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte("Unrecognized login ID in request path\n"))
-		return
-	}
-	client := login.Client.(*LineClient)
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	if !client.ValidateSignature(body, sig) {
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte("Invalid signature\n"))
-		return
-	}
-
-	if err := client.HandleWebhook(r.Context(), body); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte("Failed to handle webhook\n"))
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
 }
 
 func (lc *LineConnector) GetBridgeInfoVersion() (info, capabilities int) {
@@ -122,9 +82,15 @@ func (lc *LineConnector) GetDBMetaTypes() database.MetaTypes {
 }
 
 type UserLoginMetadata struct {
-	AccessToken string `json:"access_token"`
-	Email       string `json:"email,omitempty"`
-	Password    string `json:"password,omitempty"`
+	AccessToken       string            `json:"access_token"`
+	Email             string            `json:"email,omitempty"`
+	Password          string            `json:"password,omitempty"`
+	Mid               string            `json:"mid,omitempty"`
+	EncryptedKeyChain string            `json:"encrypted_key_chain,omitempty"`
+	E2EEPublicKey     string            `json:"e2ee_public_key,omitempty"`
+	E2EEVersion       string            `json:"e2ee_version,omitempty"`
+	E2EEKeyID         string            `json:"e2ee_key_id,omitempty"`
+	ExportedKeyMap    map[string]string `json:"exported_key_map,omitempty"`
 }
 
 func (lc *LineConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin) error {
@@ -132,6 +98,7 @@ func (lc *LineConnector) LoadUserLogin(ctx context.Context, login *bridgev2.User
 	login.Client = &LineClient{
 		UserLogin:   login,
 		AccessToken: meta.AccessToken,
+		Mid:         meta.Mid,
 		HTTPClient:  &http.Client{Timeout: 10 * time.Second},
 	}
 	return nil
@@ -292,26 +259,8 @@ func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]
 
 		select {
 		case res := <-ll.pollResult:
-			fmt.Printf("[DEBUG] WaitForLogin returned: type=%d auth.len=%d v3.access.len=%d v3.refresh.len=%d cert.len=%d mid=%s\n",
-				res.Type,
-				len(res.AuthToken),
-				len(func() string {
-					if res.TokenV3IssueResult != nil {
-						return res.TokenV3IssueResult.AccessToken
-					}
-					return ""
-				}()),
-				len(func() string {
-					if res.TokenV3IssueResult != nil {
-						return res.TokenV3IssueResult.RefreshToken
-					}
-					return ""
-				}()),
-				len(res.Certificate),
-				res.Mid,
-			)
 			if res.AuthToken != "" {
-				return ll.finishLogin(ctx, res.AuthToken)
+				return ll.finishLogin(ctx, res)
 			}
 
 		case err := <-ll.pollErr:
@@ -355,7 +304,7 @@ func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]
 	}
 
 	if res.AuthToken != "" {
-		return ll.finishLogin(ctx, client.AccessToken)
+		return ll.finishLogin(ctx, res)
 	}
 
 	if (res.Type == 3 || res.Type == 0) && res.Verifier != "" {
@@ -408,11 +357,41 @@ func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]
 	return nil, fmt.Errorf("login incomplete but no PIN found in response (Type: %d, Msg: %s)", res.Type, res.Message)
 }
 
-func (ll *LineEmailLogin) finishLogin(ctx context.Context, token string) (*bridgev2.LoginStep, error) {
+func (ll *LineEmailLogin) finishLogin(ctx context.Context, res *line.LoginResult) (*bridgev2.LoginStep, error) {
+	if res == nil {
+		return nil, fmt.Errorf("login result missing")
+	}
+
+	token := res.AuthToken
+	if token == "" && res.TokenV3IssueResult != nil {
+		token = res.TokenV3IssueResult.AccessToken
+	}
+	if token == "" {
+		return nil, fmt.Errorf("missing access token in login result")
+	}
+
 	client := line.NewClient(token)
 	_, err := client.GetProfile()
 	if err != nil {
 		return nil, fmt.Errorf("failed to verify token: %w", err)
+	}
+
+	meta := &UserLoginMetadata{AccessToken: token, Email: ll.Email, Password: ll.Password, Mid: res.Mid}
+	if res.EncryptedKeyChain != "" && res.E2EEPublicKey != "" {
+		meta.EncryptedKeyChain = res.EncryptedKeyChain
+		meta.E2EEPublicKey = res.E2EEPublicKey
+		meta.E2EEVersion = res.E2EEVersion
+		meta.E2EEKeyID = res.E2EEKeyID
+		if mgr, err := e2ee.NewManager(); err == nil {
+			if ei3, err := client.GetEncryptedIdentityV3(); err == nil {
+				if err := mgr.InitStorage(ei3.WrappedNonce, ei3.KDFParameter1, ei3.KDFParameter2); err == nil {
+					if exported, err := mgr.InitFromLoginKeyChain(res.E2EEPublicKey, res.EncryptedKeyChain); err == nil {
+						meta.ExportedKeyMap = exported
+						_ = mgr.SaveSecureDataToFile(string(ll.User.MXID), map[string]any{"exportedKeyMap": exported})
+					}
+				}
+			}
+		}
 	}
 
 	detectedLineID := networkid.UserLoginID("line_user_" + fmt.Sprint(time.Now().Unix()))
@@ -420,11 +399,7 @@ func (ll *LineEmailLogin) finishLogin(ctx context.Context, token string) (*bridg
 	ul, err := ll.User.NewLogin(ctx, &database.UserLogin{
 		ID:         detectedLineID,
 		RemoteName: "LINE User", // TODO: use profile name
-		Metadata: &UserLoginMetadata{
-			AccessToken: token,
-			Email:       ll.Email,
-			Password:    ll.Password,
-		},
+		Metadata:   meta,
 	}, &bridgev2.NewLoginParams{
 		LoadUserLogin: func(ctx context.Context, login *bridgev2.UserLogin) error {
 			login.Client = &LineClient{

@@ -52,8 +52,24 @@ async function init() {
 
 		const instance = await factory(moduleArg);
 		// Extract required classes
-		const { SecureKey, Hmac, Curve25519Key } = instance;
-		return { SecureKey, Hmac, Curve25519Key };
+		const {
+			SecureKey,
+			Hmac,
+			Curve25519Key,
+			E2EEKey,
+			E2EEChannel,
+			E2EEKeychain,
+			AesKey,
+		} = instance;
+		return {
+			SecureKey,
+			Hmac,
+			Curve25519Key,
+			E2EEKey,
+			E2EEChannel,
+			E2EEKeychain,
+			AesKey,
+		};
 	} catch (e) {
 		console.error("WASM Init Failed:", e);
 		process.exit(1);
@@ -65,8 +81,47 @@ let loginCurveKey = null;
 
 async function run() {
 	try {
-		const { SecureKey, Hmac, Curve25519Key } = await init();
+		const {
+			SecureKey,
+			Hmac,
+			Curve25519Key,
+			E2EEKey,
+			E2EEChannel,
+			E2EEKeychain,
+			AesKey,
+		} = await init();
 		const secureKey = SecureKey.loadToken(keyStr);
+
+		let storageKey = null;
+		const keyStore = new Map();
+		const channelStore = new Map();
+		let nextId = 1;
+
+		const putKey = (key) => {
+			const id = nextId++;
+			keyStore.set(id, key);
+			return id;
+		};
+		const getKey = (id) => {
+			const key = keyStore.get(id);
+			if (!key) throw new Error("unknown key");
+			return key;
+		};
+		const putChannel = (chan) => {
+			const id = nextId++;
+			channelStore.set(id, chan);
+			return id;
+		};
+		const getChannel = (id) => {
+			const chan = channelStore.get(id);
+			if (!chan) throw new Error("unknown channel");
+			return chan;
+		};
+		const b64ToU8 = (b64) => new Uint8Array(Buffer.from(b64, "base64"));
+		const u8ToB64 = (u8) => Buffer.from(u8).toString("base64");
+		const ensureStorage = () => {
+			if (!storageKey) throw new Error("storage key not initialized");
+		};
 
 		// Helper: generate PIN-wrapped secret for loginV2
 		const generateLoginSecret = () => {
@@ -148,6 +203,15 @@ async function run() {
 			}
 
 			const type = query.type || "sign";
+			const toInt = (v) =>
+				typeof v === "string" ? Number.parseInt(v, 10) : Number(v);
+			const toIntStrict = (name, v) => {
+				const n = toInt(v);
+				if (!Number.isFinite(n)) {
+					throw new Error(`invalid ${name}: ${JSON.stringify(v)}`);
+				}
+				return Math.trunc(n);
+			};
 
 			try {
 				if (type === "e2ee") {
@@ -166,15 +230,38 @@ async function run() {
 						encryptedKeyChain
 					);
 					process.stdout.write(JSON.stringify({ hash }) + "\n");
-				} else if (type === "qr" || type === "qr_secret") {
-					const result = generateQrSecret();
-					process.stdout.write(
-						JSON.stringify({
-							secret: result.secret,
-							pin: result.pin,
-							publicKeyHex: result.publicKeyHex,
-						}) + "\n"
+				} else if (type === "login_unwrap_keychain") {
+					const { serverPublicKey, encryptedKeyChain } = query;
+					if (!loginCurveKey) {
+						throw new Error("login key not initialized");
+					}
+
+					const serverRaw = Buffer.from(serverPublicKey, "base64");
+					const raw32 =
+						serverRaw.length === 32
+							? serverRaw
+							: serverRaw.length > 32
+							? serverRaw.subarray(serverRaw.length - 32)
+							: (() => {
+									throw new Error("invalid server public key length");
+						  })();
+
+					const channel = loginCurveKey.createChannel(raw32);
+					const unwrap = channel.unwrapE2EEKeyChain(
+						b64ToU8(encryptedKeyChain)
 					);
+					const keys = [];
+					for (let i = 0; i < unwrap.size(); i++) {
+						const k = unwrap.get(i);
+						const id = putKey(k);
+						keys.push({
+							keyId: id,
+							exported: u8ToB64(k.exportKey()),
+							version: k.getVersion(),
+							rawKeyId: k.getKeyId(),
+						});
+					}
+					process.stdout.write(JSON.stringify({ keys }) + "\n");
 				} else if (type === "sign") {
 					let { reqPath, body, accessToken } = query;
 
@@ -225,6 +312,111 @@ async function run() {
 						JSON.stringify({
 							signature: signature,
 						}) + "\n"
+					);
+				} else if (type === "storage_init") {
+					const { wrappedNonce, kdfParameter1, kdfParameter2 } = query;
+					if (!wrappedNonce || !kdfParameter1 || !kdfParameter2) {
+						throw new Error("missing storage init params");
+					}
+					const unwrapped = SecureKey.unwrapKeyFromEncryptedIdentityV3Response(
+						b64ToU8(wrappedNonce),
+						b64ToU8(kdfParameter1),
+						b64ToU8(kdfParameter2)
+					);
+					storageKey = new AesKey(unwrapped);
+					process.stdout.write(JSON.stringify({ ok: true }) + "\n");
+				} else if (type === "storage_encrypt") {
+					ensureStorage();
+					const plaintext = query.plaintext ?? "";
+					const ct = storageKey.encrypt(new TextEncoder().encode(plaintext));
+					process.stdout.write(
+						JSON.stringify({ ciphertext: u8ToB64(ct) }) + "\n"
+					);
+				} else if (type === "storage_decrypt") {
+					ensureStorage();
+					const { ciphertext } = query;
+					if (!ciphertext) throw new Error("missing ciphertext");
+					const pt = storageKey.decrypt(b64ToU8(ciphertext));
+					process.stdout.write(
+						JSON.stringify({
+							plaintext: new TextDecoder().decode(Uint8Array.from(pt).buffer),
+						}) + "\n"
+					);
+				} else if (type === "key_load") {
+					const { key } = query;
+					if (!key) throw new Error("missing key");
+					const k = E2EEKey.loadKey(b64ToU8(key));
+					const id = putKey(k);
+					process.stdout.write(JSON.stringify({ keyId: id }) + "\n");
+				} else if (type === "key_get_public") {
+					const { keyId } = query;
+					const k = getKey(keyId);
+					process.stdout.write(
+						JSON.stringify({ publicKey: u8ToB64(k.getPublicKey()) }) + "\n"
+					);
+				} else if (type === "key_get_id") {
+					const { keyId } = query;
+					const k = getKey(keyId);
+					process.stdout.write(JSON.stringify({ key: k.getKeyId() }) + "\n");
+				} else if (type === "channel_create") {
+					const { keyId, peerPublicKey } = query;
+					const k = getKey(keyId);
+					const chan = k.createChannel(b64ToU8(peerPublicKey));
+					const chanId = putChannel(chan);
+					process.stdout.write(JSON.stringify({ channelId: chanId }) + "\n");
+				} else if (type === "channel_encrypt_v2") {
+					const {
+						channelId,
+						to,
+						from,
+						senderKeyId,
+						receiverKeyId,
+						contentType,
+						sequenceNumber,
+						plaintext,
+					} = query;
+					const seq = typeof sequenceNumber === "bigint" ? sequenceNumber : BigInt(sequenceNumber);
+					const sKey = toIntStrict("senderKeyId", senderKeyId);
+					const rKey = toIntStrict("receiverKeyId", receiverKeyId);
+					const cType = toIntStrict("contentType", contentType);
+					const chan = getChannel(toIntStrict("channelId", channelId));
+					const ct = chan.encryptV2(
+						to,
+						from,
+						sKey,
+						rKey,
+						cType,
+						seq,
+						new TextEncoder().encode(plaintext || "")
+					);
+					process.stdout.write(
+						JSON.stringify({ ciphertext: u8ToB64(ct) }) + "\n"
+					);
+				} else if (type === "channel_decrypt_v2") {
+					const {
+						channelId,
+						to,
+						from,
+						senderKeyId,
+						receiverKeyId,
+						contentType,
+						ciphertext,
+					} = query;
+					const chan = getChannel(toIntStrict("channelId", channelId));
+					const sKey = toIntStrict("senderKeyId", senderKeyId);
+					const rKey = toIntStrict("receiverKeyId", receiverKeyId);
+					const cType = toIntStrict("contentType", contentType);
+					const pt = chan.decryptV2(
+						to,
+						from,
+						sKey,
+						rKey,
+						cType,
+						b64ToU8(ciphertext)
+					);
+					const plaintext = new TextDecoder().decode(Uint8Array.from(pt).buffer);
+					process.stdout.write(
+						JSON.stringify({ plaintext, base64: u8ToB64(pt) }) + "\n"
 					);
 				} else {
 					throw new Error("Unknown command type: " + type);

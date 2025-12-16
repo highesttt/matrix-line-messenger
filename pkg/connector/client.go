@@ -7,12 +7,15 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/highesttt/mautrix-line-messenger/pkg/e2ee"
 	"github.com/highesttt/mautrix-line-messenger/pkg/line"
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/ptr"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/bridgev2/status"
@@ -22,12 +25,32 @@ import (
 type LineClient struct {
 	UserLogin   *bridgev2.UserLogin
 	AccessToken string
+	Mid         string
 	HTTPClient  *http.Client
+	E2EE        *e2ee.Manager
+	peerKeys    map[string]peerKeyInfo
+
+	reqSeqMu    sync.Mutex
+	sentReqSeqs map[int]time.Time
 }
 
 var _ bridgev2.NetworkAPI = (*LineClient)(nil)
 
 func (lc *LineClient) Connect(ctx context.Context) {
+	if lc.peerKeys == nil {
+		lc.peerKeys = make(map[string]peerKeyInfo)
+	}
+	lc.reqSeqMu.Lock()
+	if lc.sentReqSeqs == nil {
+		lc.sentReqSeqs = make(map[int]time.Time)
+	}
+	lc.reqSeqMu.Unlock()
+
+	if lc.Mid == "" {
+		if meta, ok := lc.UserLogin.Metadata.(*UserLoginMetadata); ok {
+			lc.Mid = meta.Mid
+		}
+	}
 	if lc.AccessToken == "" {
 		var email, password string
 		if meta, ok := lc.UserLogin.Metadata.(*UserLoginMetadata); ok {
@@ -56,6 +79,12 @@ func (lc *LineClient) Connect(ctx context.Context) {
 				return
 			}
 			lc.AccessToken = client.AccessToken
+			if res.Mid != "" {
+				lc.Mid = res.Mid
+				if meta, ok := lc.UserLogin.Metadata.(*UserLoginMetadata); ok {
+					meta.Mid = res.Mid
+				}
+			}
 			lc.UserLogin.Bridge.Log.Info().Msg("Login successful!")
 		} else {
 			lc.UserLogin.BridgeState.Send(status.BridgeState{
@@ -72,27 +101,36 @@ func (lc *LineClient) Connect(ctx context.Context) {
 		StateEvent: status.StateConnected,
 	})
 
-	go lc.pollLoop(ctx)
-}
+	// Initialize E2EE manager and load keys
+	mgr, err := e2ee.NewManager()
+	if err != nil {
+		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to init E2EE manager")
+	} else {
+		lc.E2EE = mgr
+		if meta, ok := lc.UserLogin.Metadata.(*UserLoginMetadata); ok && len(meta.ExportedKeyMap) > 0 {
+			if err := mgr.LoadMyKeyFromExportedMap(meta.ExportedKeyMap); err != nil {
+				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to load E2EE key from DB metadata")
+			} else {
+				lc.UserLogin.Bridge.Log.Info().Int("exported_keys", len(meta.ExportedKeyMap)).Msg("Loaded E2EE key from DB metadata")
+			}
+		}
 
-// Temporary structs to parse the poll response
-type PollResponse struct {
-	Operations []line.Operation `json:"operations"`
-}
-
-func (lc *LineClient) parseOperations(body []byte) ([]line.Operation, int64, error) {
-	var resp PollResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, 0, nil
-	}
-
-	var maxRev int64
-	for _, op := range resp.Operations {
-		if rev, err := op.Revision.Int64(); err == nil && rev > maxRev {
-			maxRev = rev
+		// Storage key is optional for runtime decrypt/encrypt; try it for file support
+		client := line.NewClient(lc.AccessToken)
+		if ei3, err := client.GetEncryptedIdentityV3(); err == nil {
+			if err := mgr.InitStorage(ei3.WrappedNonce, ei3.KDFParameter1, ei3.KDFParameter2); err != nil {
+				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to init storage key")
+			} else if data, err := mgr.LoadSecureDataFromFile(string(lc.UserLogin.ID)); err == nil {
+				if err := mgr.LoadMyKeyFromSecureData(data); err != nil {
+					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to load E2EE key from secure data")
+				}
+			}
+		} else {
+			lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to fetch EncryptedIdentityV3")
 		}
 	}
-	return resp.Operations, maxRev, nil
+
+	go lc.pollLoop(ctx)
 }
 
 func (lc *LineClient) pollLoop(ctx context.Context) {
@@ -158,11 +196,21 @@ func (lc *LineClient) pollLoop(ctx context.Context) {
 	}
 }
 
-func (lc *LineClient) handleOperation(ctx context.Context, op line.Operation) {
+func (lc *LineClient) handleOperation(_ context.Context, op line.Operation) {
 	// Type 25 = SEND_MESSAGE (Message sent by you from another device)
 	// Type 26 = RECEIVE_MESSAGE (Message received from another user)
 
-	// !FIX: My messages from other devices are showing up as seperate, new users
+	if op.Type == 25 {
+		lc.reqSeqMu.Lock()
+		_, ok := lc.sentReqSeqs[op.ReqSeq]
+		if ok {
+			delete(lc.sentReqSeqs, op.ReqSeq)
+			lc.reqSeqMu.Unlock()
+			return
+		}
+		lc.reqSeqMu.Unlock()
+	}
+
 	if (op.Type == 25 || op.Type == 26) && op.Message != nil {
 		lc.queueIncomingMessage(op.Message, op.Type)
 	}
@@ -186,10 +234,28 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 	// Handle Content
 	bodyText := msg.Text
 	if bodyText == "" && len(msg.Chunks) > 0 {
-		bodyText = "[Encrypted Message]"
+		bodyText = "[Unable to decrypt message. Open an issue on GitHub.]"
+		if lc.E2EE != nil {
+			if pt, err := lc.E2EE.DecryptMessageV2(msg); err == nil && pt != "" {
+				bodyText = pt
+			} else {
+				lc.ensurePeerKeyForMessage(context.Background(), msg)
+				if ptRetry, errRetry := lc.E2EE.DecryptMessageV2(msg); errRetry == nil && ptRetry != "" {
+					bodyText = ptRetry
+				}
+			}
+		}
 	}
 
-	lc.UserLogin.Bridge.Log.Debug().Str("msg_id", msg.ID).Str("from", msg.From).Str("to", msg.To).Int("opType", opType).Msg("Queueing incoming LINE message")
+	// unwrap JSON payloaad
+	if strings.HasPrefix(bodyText, "{") {
+		var wrapper map[string]any
+		if err := json.Unmarshal([]byte(bodyText), &wrapper); err == nil {
+			if t, ok := wrapper["text"].(string); ok {
+				bodyText = t
+			}
+		}
+	}
 
 	lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.Message[line.Message]{
 		EventMeta: simplevent.EventMeta{
@@ -197,7 +263,7 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 			LogContext:   func(c zerolog.Context) zerolog.Context { return c.Str("msg_id", msg.ID) },
 			PortalKey:    portalKey,
 			CreatePortal: true,
-			Sender:       bridgev2.EventSender{Sender: senderID},
+			Sender:       bridgev2.EventSender{Sender: senderID, IsFromMe: opType == 25},
 			Timestamp:    time.Now(),
 		},
 		Data: *msg,
@@ -265,101 +331,142 @@ func (lc *LineClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*
 	return &bridgev2.UserInfo{Identifiers: []string{string(ghost.ID)}, Name: ptr.Ptr(string(ghost.ID))}, nil
 }
 
-type lineWebhook struct {
-	Events []lineEvent `json:"events"`
+type peerKeyInfo struct {
+	raw int
+	pub string
 }
 
-type lineEvent struct {
-	Type       string       `json:"type"`
-	ReplyToken string       `json:"replyToken"`
-	Source     lineSource   `json:"source"`
-	Timestamp  int64        `json:"timestamp"`
-	Message    *lineMessage `json:"message"`
-}
-
-type lineSource struct {
-	Type   string `json:"type"`
-	UserID string `json:"userId"`
-}
-
-type lineMessage struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-// !FIX : Temporary function to attempt to validate signature
-func (lc *LineClient) ValidateSignature(body []byte, signature string) bool {
-	return false
-
-	// mac := hmac.New(sha256.New, []byte(line.ChannelSecret))
-	// mac.Write(body)
-	// expected := mac.Sum(nil)
-	// decoded, err := base64.StdEncoding.DecodeString(signature)
-	// if err != nil {
-	// 	return false
-	// }
-	// return hmac.Equal(expected, decoded)
-}
-
-func (lc *LineClient) HandleWebhook(ctx context.Context, body []byte) error {
-	var payload lineWebhook
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return err
+func (lc *LineClient) midOrFallback() string {
+	if lc.Mid != "" {
+		return lc.Mid
 	}
-	for _, ev := range payload.Events {
-		if ev.Type != "message" || ev.Message == nil || ev.Message.Type != "text" {
-			continue
+	return string(lc.UserLogin.ID)
+}
+
+func guessToType(mid string) int {
+	if strings.HasPrefix(strings.ToLower(mid), "c") {
+		return 2 // GROUP
+	}
+	if strings.HasPrefix(strings.ToLower(mid), "r") {
+		return 1 // ROOM
+	}
+	return 0 // USER
+}
+
+func (lc *LineClient) ensurePeerKey(_ context.Context, mid string) (int, string, error) {
+	if lc.peerKeys == nil {
+		lc.peerKeys = make(map[string]peerKeyInfo)
+	}
+	if cached, ok := lc.peerKeys[mid]; ok && cached.raw != 0 && cached.pub != "" {
+		if lc.E2EE != nil {
+			lc.E2EE.RegisterPeerPublicKey(cached.raw, cached.pub)
 		}
-		lc.queueIncoming(ev)
+		return cached.raw, cached.pub, nil
 	}
-	return nil
+	client := line.NewClient(lc.AccessToken)
+	res, err := client.NegotiateE2EEPublicKey(mid)
+	if err != nil {
+		return 0, "", err
+	}
+	keyID, err := res.KeyID.Int64()
+	if err != nil {
+		return 0, "", err
+	}
+	pk := peerKeyInfo{raw: int(keyID), pub: res.PublicKey}
+	lc.peerKeys[mid] = pk
+	if lc.E2EE != nil {
+		lc.E2EE.RegisterPeerPublicKey(pk.raw, pk.pub)
+	}
+	return pk.raw, pk.pub, nil
 }
 
-func (lc *LineClient) queueIncoming(ev lineEvent) {
-	userID := makeUserID(ev.Source.UserID)
-	portalID := networkid.PortalKey{ID: makePortalID(ev.Source.UserID), Receiver: lc.UserLogin.ID}
-	lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.Message[lineEvent]{
-		EventMeta: simplevent.EventMeta{
-			Type: bridgev2.RemoteEventMessage,
-			LogContext: func(c zerolog.Context) zerolog.Context {
-				return c.Str("from", ev.Source.UserID).Str("message_id", ev.Message.ID)
-			},
-			PortalKey:    portalID,
-			CreatePortal: true,
-			Sender:       bridgev2.EventSender{Sender: userID},
-			Timestamp:    time.UnixMilli(ev.Timestamp),
-		},
-		Data:               ev,
-		ID:                 networkid.MessageID(ev.Message.ID),
-		ConvertMessageFunc: lc.convertMessage,
-	})
-}
-
-func (lc *LineClient) convertMessage(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, ev lineEvent) (*bridgev2.ConvertedMessage, error) {
-	return &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{{Type: event.EventMessage, Content: &event.MessageEventContent{MsgType: event.MsgText, Body: ev.Message.Text}}}}, nil
+func (lc *LineClient) ensurePeerKeyForMessage(ctx context.Context, msg *line.Message) {
+	if lc.E2EE == nil || len(msg.Chunks) < 5 {
+		return
+	}
+	senderKeyID, err1 := e2ee.DecodeKeyID(msg.Chunks[len(msg.Chunks)-2])
+	receiverKeyID, err2 := e2ee.DecodeKeyID(msg.Chunks[len(msg.Chunks)-1])
+	myRaw, _, errMy := lc.E2EE.MyKeyIDs()
+	if err1 != nil || err2 != nil || errMy != nil {
+		return
+	}
+	peerRaw := senderKeyID
+	if senderKeyID == myRaw {
+		peerRaw = receiverKeyID
+	}
+	if peerRaw == 0 || peerRaw == myRaw {
+		return
+	}
+	if _, ok := lc.peerKeys[msg.From]; ok {
+		return
+	}
+	if _, _, err := lc.ensurePeerKey(ctx, msg.From); err != nil {
+		lc.UserLogin.Bridge.Log.Warn().Err(err).Str("peer", msg.From).Msg("Failed to fetch peer key for decrypt")
+	}
 }
 
 func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
-	_ = line.NewClient(lc.AccessToken)
-	_ = string(msg.Portal.ID)
-
-	switch msg.Content.MsgType {
-	case event.MsgText:
-		return nil, fmt.Errorf("failed to send text message: not yet implemented")
-	case event.MsgImage, event.MsgVideo, event.MsgAudio, event.MsgFile:
-		return nil, fmt.Errorf("media messages are not yet implemented")
-	default:
-		return nil, fmt.Errorf("unsupported message type: %s", msg.Content.MsgType)
+	if lc.E2EE == nil {
+		return nil, fmt.Errorf("E2EE not initialized; cannot send")
 	}
 
-	// return &bridgev2.MatrixMessageResponse{
-	// 	DB: &database.Message{
-	// 		ID:        networkid.MessageID(fmt.Sprintf("line-%d", time.Now().UnixNano())),
-	// 		SenderID:  makeUserID(string(lc.UserLogin.ID)),
-	// 		Timestamp: time.Now(),
-	// 	},
-	// }, nil
+	if msg.Content.MsgType != event.MsgText {
+		return nil, fmt.Errorf("only text messages are implemented")
+	}
+
+	portalMid := string(msg.Portal.ID)
+	client := line.NewClient(lc.AccessToken)
+	myRaw, myKeyID, err := lc.E2EE.MyKeyIDs()
+	if err != nil {
+		return nil, fmt.Errorf("missing own E2EE key: %w", err)
+	}
+
+	peerRaw, peerPub, err := lc.ensurePeerKey(ctx, portalMid)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get peer key: %w", err)
+	}
+
+	fromMid := lc.midOrFallback()
+	chunks, err := lc.E2EE.EncryptMessageV2(portalMid, fromMid, myKeyID, peerPub, myRaw, peerRaw, 0, msg.Content.Body)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt failed: %w", err)
+	}
+
+	now := time.Now().UnixMilli()
+	lineMsg := &line.Message{
+		ID:          fmt.Sprintf("local-%d", now),
+		From:        lc.midOrFallback(),
+		To:          portalMid,
+		ToType:      guessToType(portalMid),
+		SessionID:   0,
+		CreatedTime: json.Number(strconv.FormatInt(now, 10)),
+		ContentType: 0,
+		HasContent:  false,
+		ContentMetadata: map[string]string{
+			"e2eeVersion": "2",
+		},
+		Chunks: chunks,
+	}
+
+	reqSeq := int(now % 1_000_000_000)
+	lc.reqSeqMu.Lock()
+	if lc.sentReqSeqs == nil {
+		lc.sentReqSeqs = make(map[int]time.Time)
+	}
+	lc.sentReqSeqs[reqSeq] = time.Now()
+	lc.reqSeqMu.Unlock()
+
+	if err := client.SendMessage(int64(reqSeq), lineMsg); err != nil {
+		return nil, err
+	}
+
+	return &bridgev2.MatrixMessageResponse{
+		DB: &database.Message{
+			ID:        networkid.MessageID(lineMsg.ID),
+			SenderID:  makeUserID(string(lc.UserLogin.ID)),
+			Timestamp: time.UnixMilli(now),
+		},
+	}, nil
 }
 
 var _ bridgev2.IdentifierResolvingNetworkAPI = (*LineClient)(nil)

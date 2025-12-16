@@ -1,0 +1,415 @@
+package e2ee
+
+import (
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+
+	gen "github.com/highesttt/mautrix-line-messenger/pkg"
+	"github.com/highesttt/mautrix-line-messenger/pkg/line"
+)
+
+/*
+This wraps the JS runner to perform storage init, key/channel handling, and e2ee encrypt/decrypt.
+*/
+type Manager struct {
+	runner *gen.Runner
+
+	mu            sync.Mutex
+	myKeyID       int
+	myRawKeyID    int
+	myKeyB64      string
+	myPublicB64   string
+	peerPublic    map[int]string // raw key id -> public key b64
+	keyByRawID    map[int]int    // raw key id -> runner key id
+	channelByPair map[string]int // privRaw/peerRaw -> channelId
+	sequence      map[string]int // portal/chat id -> seq
+}
+
+func NewManager() (*Manager, error) {
+	r, err := gen.GetRunner()
+	if err != nil {
+		return nil, err
+	}
+	return &Manager{
+		runner:        r,
+		peerPublic:    make(map[int]string),
+		keyByRawID:    make(map[int]int),
+		channelByPair: make(map[string]int),
+		sequence:      make(map[string]int),
+	}, nil
+}
+
+// returns both the raw key id and the runner key ids
+func (m *Manager) MyKeyIDs() (rawID int, keyID int, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.myKeyID == 0 || m.myRawKeyID == 0 {
+		return 0, 0, fmt.Errorf("my key not loaded")
+	}
+	return m.myRawKeyID, m.myKeyID, nil
+}
+
+func (m *Manager) InitStorage(wrappedNonce, kdf1, kdf2 string) error {
+	return m.runner.StorageInit(wrappedNonce, kdf1, kdf2)
+}
+
+func (m *Manager) LoadMyKey(b64Key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	keyID, err := m.runner.KeyLoad(b64Key)
+	if err != nil {
+		return err
+	}
+	rawID, err := m.runner.KeyGetID(keyID)
+	if err != nil {
+		return err
+	}
+	pub, err := m.runner.KeyGetPublic(keyID)
+	if err != nil {
+		return err
+	}
+	m.myKeyID = keyID
+	m.myRawKeyID = rawID
+	m.myKeyB64 = b64Key
+	m.myPublicB64 = pub
+	m.keyByRawID[rawID] = keyID
+	m.peerPublic[rawID] = pub
+	return nil
+}
+
+func (m *Manager) LoadMyKeyFromSecureData(data map[string]any) error {
+	rawMap, ok := data["exportedKeyMap"].(map[string]any)
+	if !ok || len(rawMap) == 0 {
+		return fmt.Errorf("exportedKeyMap missing in secure data")
+	}
+	ids := make([]int, 0, len(rawMap))
+	for k := range rawMap {
+		if n, err := strconv.Atoi(k); err == nil {
+			ids = append(ids, n)
+		}
+	}
+	if len(ids) == 0 {
+		return fmt.Errorf("no numeric key ids in exportedKeyMap")
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(ids)))
+	for _, id := range ids {
+		v := rawMap[strconv.Itoa(id)]
+		b64, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if err := m.LoadMyKey(b64); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("failed to load any exported key")
+}
+
+func (m *Manager) LoadMyKeyFromExportedMap(exported map[string]string) error {
+	if len(exported) == 0 {
+		return fmt.Errorf("no exported keys provided")
+	}
+	raw := make(map[string]any, len(exported))
+	for k, v := range exported {
+		raw[k] = v
+	}
+	return m.LoadMyKeyFromSecureData(map[string]any{"exportedKeyMap": raw})
+}
+
+func (m *Manager) DecryptSecureBlob(b64Cipher string) (map[string]any, error) {
+	pt, err := m.runner.StorageDecrypt(b64Cipher)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(pt), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (m *Manager) EncryptSecureBlob(data map[string]any) (string, error) {
+	buf, err := json.Marshal(data)
+	if err != nil {
+		return "", err
+	}
+	return m.runner.StorageEncrypt(string(buf))
+}
+
+func (m *Manager) LoadSecureDataFromFile(id string) (map[string]any, error) {
+	path := filepath.Join("data", fmt.Sprintf("lcs_secure_%s.json", id))
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return m.DecryptSecureBlob(strings.TrimSpace(string(b)))
+}
+
+func (m *Manager) SaveSecureDataToFile(id string, data map[string]any) error {
+	ct, err := m.EncryptSecureBlob(data)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join("data", fmt.Sprintf("lcs_secure_%s.json", id))
+	return os.WriteFile(path, []byte(ct), 0o600)
+}
+
+func (m *Manager) InitFromLoginKeyChain(serverPubB64, encryptedKeyChainB64 string) (map[string]string, error) {
+	keys, err := m.runner.LoginUnwrapKeyChain(serverPubB64, encryptedKeyChainB64)
+	if err != nil {
+		return nil, err
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("no keys unwrapped")
+	}
+	// Sort keys by raw id desc and pick the latest for self
+	sort.Slice(keys, func(i, j int) bool { return keys[i].RawKeyID > keys[j].RawKeyID })
+	exportedMap := make(map[string]string)
+	for _, k := range keys {
+		exportedMap[strconv.Itoa(k.RawKeyID)] = k.Exported
+		m.RegisterUnwrappedKey(k.RawKeyID, k.KeyID)
+		pub, err := m.runner.KeyGetPublic(k.KeyID)
+		if err == nil {
+			m.RegisterPeerPublicKey(k.RawKeyID, pub)
+		}
+	}
+	if err := m.LoadMyKey(keys[0].Exported); err != nil {
+		return nil, err
+	}
+	return exportedMap, nil
+}
+
+func (m *Manager) EncryptMessageV2(chatID, from string, myKeyID int, peerPubKeyB64 string, senderKeyID, receiverKeyID, contentType int, plaintext string) ([]string, error) {
+	chanID, seq, err := m.ensureChannelForEncrypt(chatID, myKeyID, senderKeyID, receiverKeyID, peerPubKeyB64)
+	if err != nil {
+		return nil, err
+	}
+
+	//plaintext is a JSON object wrapping the text.
+	payload, err := json.Marshal(map[string]string{"text": plaintext})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	ctB64, err := m.runner.ChannelEncryptV2(chanID, chatID, from, senderKeyID, receiverKeyID, contentType, seq, string(payload))
+	if err != nil {
+		return nil, err
+	}
+	ctBytes, err := base64.StdEncoding.DecodeString(ctB64)
+	if err != nil {
+		return nil, err
+	}
+	// Split into chunks: [first16, middle, last12, senderKeyId(4), receiverKeyId(4)]
+	if len(ctBytes) < 28 {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+	// output = [Header (16)] [Tag (12)] [Body (...)]
+	// chunks sent: [Header] [Body] [Tag]
+	first := ctBytes[:16]
+	tag := ctBytes[16:28]
+	body := ctBytes[28:]
+
+	senderBuf := make([]byte, 4)
+	receiverBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(senderBuf, uint32(senderKeyID))
+	binary.BigEndian.PutUint32(receiverBuf, uint32(receiverKeyID))
+	toB64 := func(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
+	// [first, body, tag]
+	chunks := []string{toB64(first), toB64(body), toB64(tag), toB64(senderBuf), toB64(receiverBuf)}
+	return chunks, nil
+}
+
+func (m *Manager) ensureChannelForEncrypt(chatID string, myKeyID, senderKeyID, receiverKeyID int, peerPubKeyB64 string) (int, int, error) {
+	m.mu.Lock()
+	myRaw := m.myRawKeyID
+	myRunnerKey := myKeyID
+	if myRunnerKey == 0 {
+		myRunnerKey = m.myKeyID
+	}
+	peerPub := m.peerPublic
+	keyByRaw := m.keyByRawID
+	seqMap := m.sequence
+	m.mu.Unlock()
+
+	var privRaw, pubRaw, privKeyID int
+	if senderKeyID == myRaw {
+		privRaw, pubRaw, privKeyID = senderKeyID, receiverKeyID, myRunnerKey
+	} else if receiverKeyID == myRaw {
+		privRaw, pubRaw, privKeyID = receiverKeyID, senderKeyID, myRunnerKey
+	} else if id, ok := keyByRaw[senderKeyID]; ok {
+		privRaw, pubRaw, privKeyID = senderKeyID, receiverKeyID, id
+	} else if id, ok := keyByRaw[receiverKeyID]; ok {
+		privRaw, pubRaw, privKeyID = receiverKeyID, senderKeyID, id
+	} else {
+		return 0, 0, fmt.Errorf("no matching private key for senderKeyID=%d receiverKeyID=%d", senderKeyID, receiverKeyID)
+	}
+
+	pubKey := peerPubKeyB64
+	if pubKey == "" {
+		m.mu.Lock()
+		pubKey = peerPub[pubRaw]
+		m.mu.Unlock()
+	}
+	if pubKey == "" {
+		return 0, 0, fmt.Errorf("missing peer public key for raw id %d", pubRaw)
+	}
+
+	m.RegisterPeerPublicKey(pubRaw, pubKey)
+
+	pairKey := fmt.Sprintf("%d|%d", privRaw, pubRaw)
+	m.mu.Lock()
+	chanID, ok := m.channelByPair[pairKey]
+	m.mu.Unlock()
+	if !ok {
+		created, err := m.runner.ChannelCreate(privKeyID, pubKey)
+		if err != nil {
+			return 0, 0, err
+		}
+		chanID = created
+		m.mu.Lock()
+		m.channelByPair[pairKey] = chanID
+		m.mu.Unlock()
+	}
+
+	m.mu.Lock()
+	seq := seqMap[chatID] + 1 // start at 1 like extension?
+	seqMap[chatID] = seq
+	m.mu.Unlock()
+
+	return chanID, seq, nil
+}
+
+func (m *Manager) DecryptMessageV2(msg *line.Message) (string, error) {
+	if len(msg.Chunks) < 5 {
+		return "", fmt.Errorf("not enough chunks")
+	}
+	m.mu.Lock()
+	myRaw := m.myRawKeyID
+	m.mu.Unlock()
+	if myRaw == 0 {
+		return "", fmt.Errorf("my key not loaded")
+	}
+	// Extract sender/receiver key ids from last two chunks
+	senderKeyID, err := DecodeKeyID(msg.Chunks[len(msg.Chunks)-2])
+	if err != nil {
+		return "", err
+	}
+	receiverKeyID, err := DecodeKeyID(msg.Chunks[len(msg.Chunks)-1])
+	if err != nil {
+		return "", err
+	}
+	cipher, err := assembleCipher(msg.Chunks)
+	if err != nil {
+		return "", err
+	}
+	chanID, err := m.channelFromKeyIDs(senderKeyID, receiverKeyID)
+	if err != nil {
+		return "", err
+	}
+	pt, _, err := m.runner.ChannelDecryptV2(chanID, msg.To, msg.From, senderKeyID, receiverKeyID, msg.ContentType, base64.StdEncoding.EncodeToString(cipher))
+	if err != nil {
+		return "", err
+	}
+	return pt, nil
+}
+
+func (m *Manager) RegisterPeerPublicKey(rawKeyID int, pubB64 string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.peerPublic[rawKeyID] = pubB64
+}
+
+func (m *Manager) RegisterUnwrappedKey(rawKeyID, runnerKeyID int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.keyByRawID[rawKeyID] = runnerKeyID
+}
+
+func (m *Manager) channelFromKeyIDs(senderKeyID, receiverKeyID int) (int, error) {
+	m.mu.Lock()
+	myRaw := m.myRawKeyID
+	myKeyID := m.myKeyID
+	peerPub := m.peerPublic
+	keyByRaw := m.keyByRawID
+	m.mu.Unlock()
+
+	// Determine which side is the users's
+	var privRaw, pubRaw, privKeyID int
+	if senderKeyID == myRaw {
+		privRaw, pubRaw = senderKeyID, receiverKeyID
+		privKeyID = myKeyID
+	} else if receiverKeyID == myRaw {
+		privRaw, pubRaw = receiverKeyID, senderKeyID
+		privKeyID = myKeyID
+	} else if id, ok := keyByRaw[senderKeyID]; ok {
+		privRaw, pubRaw = senderKeyID, receiverKeyID
+		privKeyID = id
+	} else if id, ok := keyByRaw[receiverKeyID]; ok {
+		privRaw, pubRaw = receiverKeyID, senderKeyID
+		privKeyID = id
+	} else {
+		return 0, fmt.Errorf("no matching private key for senderKeyID=%d receiverKeyID=%d", senderKeyID, receiverKeyID)
+	}
+
+	pubB64, ok := peerPub[pubRaw]
+	if !ok {
+		return 0, fmt.Errorf("missing peer public key for raw id %d", pubRaw)
+	}
+
+	pairKey := fmt.Sprintf("%d|%d", privRaw, pubRaw)
+	m.mu.Lock()
+	if id, ok := m.channelByPair[pairKey]; ok {
+		m.mu.Unlock()
+		return id, nil
+	}
+	m.mu.Unlock()
+
+	chanID, err := m.runner.ChannelCreate(privKeyID, pubB64)
+	if err != nil {
+		return 0, err
+	}
+	m.mu.Lock()
+	m.channelByPair[pairKey] = chanID
+	m.mu.Unlock()
+	return chanID, nil
+}
+
+func DecodeKeyID(b64 string) (int, error) {
+	b, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return 0, err
+	}
+	if len(b) != 4 {
+		return 0, fmt.Errorf("invalid key id length")
+	}
+	return int(binary.BigEndian.Uint32(b)), nil
+}
+
+func assembleCipher(chunks []string) ([]byte, error) {
+	if len(chunks) < 3 {
+		return nil, fmt.Errorf("not enough chunks")
+	}
+	decode := func(s string) ([]byte, error) { return base64.StdEncoding.DecodeString(strings.TrimSpace(s)) }
+	b0, err := decode(chunks[0])
+	if err != nil {
+		return nil, err
+	}
+	b1, err := decode(chunks[1])
+	if err != nil {
+		return nil, err
+	}
+	b2, err := decode(chunks[2])
+	if err != nil {
+		return nil, err
+	}
+	// Decrypted blob is [first, tag, middle], while chunks are [first, middle, tag]
+	return append(append(b0, b2...), b1...), nil
+}

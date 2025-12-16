@@ -82,8 +82,6 @@ func (c *Client) Login(email, pass string) (*LoginResult, error) {
 func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 	url := "https://line-chrome-gw.line-apps.com/api/talk/long-polling/LF1"
 
-	fmt.Printf("[DEBUG] Starting Long Polling for Verifier: %s\n", verifier)
-
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -112,18 +110,11 @@ func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 	pollClient := &http.Client{Timeout: 120 * time.Second} // Increased timeout
 	resp, err := pollClient.Do(req)
 	if err != nil {
-		fmt.Printf("[DEBUG] Polling network error: %v\n", err)
 		time.Sleep(2 * time.Second)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != 200 {
-		fmt.Printf("[DEBUG] Polling HTTP %d: %s\n", resp.StatusCode, string(body))
-	} else {
-		fmt.Printf("[DEBUG] Polling Response: %s\n", string(body))
-	}
 
 	var wrapper struct {
 		Code    int                `json:"code"`
@@ -131,7 +122,6 @@ func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 		Data    LoginPollingResult `json:"data"`
 	}
 	if err := json.Unmarshal(body, &wrapper); err != nil {
-		fmt.Printf("[DEBUG] JSON Parse Error: %v\n", err)
 		time.Sleep(2 * time.Second)
 	}
 
@@ -139,42 +129,19 @@ func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 
 	// Send confirmE2EELogin when the encrypted key chain is provided (post-LF1 step)
 	if meta.EncryptedKeyChain != "" && meta.PublicKey != "" {
-		if err := c.ConfirmE2EELogin(verifier, meta.PublicKey, meta.EncryptedKeyChain); err != nil {
-			fmt.Printf("[DEBUG] confirmE2EELogin error: %v\n", err)
-		} else {
+		if err := c.ConfirmE2EELogin(verifier, meta.PublicKey, meta.EncryptedKeyChain); err == nil {
 			// After confirm succeeds, finalize login using the verifier to get our access token
-			if res, err := c.LoginV2WithVerifier(verifier); err != nil {
-				fmt.Printf("[DEBUG] loginV2 with verifier error: %v\n", err)
-			} else {
-				fmt.Printf(
-					"[DEBUG] loginV2 verifier success: mid=%s cert=%s auth.len=%d v3.access.len=%d v3.refresh.len=%d\n",
-					res.Mid,
-					res.Certificate,
-					len(res.AuthToken),
-					len(func() string {
-						if res.TokenV3IssueResult != nil {
-							return res.TokenV3IssueResult.AccessToken
-						}
-						return ""
-					}()),
-					len(func() string {
-						if res.TokenV3IssueResult != nil {
-							return res.TokenV3IssueResult.RefreshToken
-						}
-						return ""
-					}()),
-				)
+			if res, err := c.LoginV2WithVerifier(verifier); err == nil {
+				res.EncryptedKeyChain = meta.EncryptedKeyChain
+				res.E2EEPublicKey = meta.PublicKey
+				res.E2EEVersion = meta.E2EEVersion
+				res.E2EEKeyID = meta.KeyID
 				return res, nil
 			}
 		}
 	}
 
 	if meta.AuthToken != "" || meta.Certificate != "" {
-		fmt.Printf(
-			"[DEBUG] polling metadata auth: authToken.len=%d cert=%s\n",
-			len(meta.AuthToken),
-			meta.Certificate,
-		)
 		return &LoginResult{
 			AuthToken:   meta.AuthToken,
 			Certificate: meta.Certificate,
@@ -204,9 +171,15 @@ func (c *Client) GetRSAKeyInfo() (*RSAKeyInfo, error) {
 func (c *Client) callRPC(service, method string, args ...interface{}) ([]byte, error) {
 	url := fmt.Sprintf("%s/%s/%s", BaseURL, service, method)
 
-	bodyBytes, err := json.Marshal(args)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal args: %w", err)
+	var bodyBytes []byte
+	if len(args) == 0 {
+		bodyBytes = []byte("[]")
+	} else {
+		var err error
+		bodyBytes, err = json.Marshal(args)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal args: %w", err)
+		}
 	}
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
@@ -258,18 +231,10 @@ func (c *Client) ConfirmE2EELogin(verifier, serverPublicKeyB64, encryptedKeyChai
 		return fmt.Errorf("failed to init runner: %w", err)
 	}
 
-	fmt.Printf(
-		"[DEBUG] confirmE2EELogin start: verifier=%s serverPublicKey=%s encryptedKeyChain=%s\n",
-		verifier,
-		serverPublicKeyB64,
-		encryptedKeyChainB64,
-	)
-
 	hash, err := runner.GenerateConfirmHash(serverPublicKeyB64, encryptedKeyChainB64)
 	if err != nil {
 		return fmt.Errorf("failed to derive confirm hash: %w", err)
 	}
-	fmt.Printf("[DEBUG] confirmE2EELogin derived hash: %s\n", hash)
 
 	bodyBytes, err := json.Marshal([]string{verifier, hash})
 	if err != nil {
@@ -281,7 +246,6 @@ func (c *Client) ConfirmE2EELogin(verifier, serverPublicKeyB64, encryptedKeyChai
 	if err != nil {
 		return err
 	}
-	fmt.Printf("[DEBUG] confirmE2EELogin response raw: %s\n", string(respBytes))
 
 	var wrapper struct {
 		Code    int    `json:"code"`

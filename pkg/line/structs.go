@@ -17,16 +17,6 @@ type LoginRequest struct {
 	E2EEVersion      int    `json:"e2eeVersion"`
 }
 
-type Location struct {
-	Title     string  `json:"title"`
-	Address   string  `json:"address"`
-	Latitude  float64 `json:"latitude"`
-	Longitude float64 `json:"longitude"`
-}
-
-// SyncReason is often just an integer, e.g. 2
-type SyncReason int
-
 type Operation struct {
 	Revision    json.Number `json:"revision"`
 	Type        int         `json:"type"` // 25=Send, 26=Receive
@@ -43,13 +33,25 @@ type Message struct {
 	From            string            `json:"from"`
 	To              string            `json:"to"`
 	ToType          int               `json:"toType"`
+	SessionID       int               `json:"sessionId,omitempty"`
 	CreatedTime     json.Number       `json:"createdTime"`
 	ContentType     int               `json:"contentType"`
+	HasContent      bool              `json:"hasContent,omitempty"`
 	ContentMetadata map[string]string `json:"contentMetadata"`
 
 	Text string `json:"text,omitempty"`
 
 	Chunks []string `json:"chunks,omitempty"`
+}
+
+// E2EEPublicKey represents the peer key returned by negotiateE2EEPublicKey
+type E2EEPublicKey struct {
+	KeyID        json.Number `json:"keyId"` // raw key id used in sender/receiver chunks
+	PublicKey    string      `json:"publicKey"`
+	E2EEVersion  int         `json:"e2eeVersion"`
+	Expired      bool        `json:"expired"`
+	CreatedTime  json.Number `json:"createdTime"`
+	RenewalCount int         `json:"renewalCount"`
 }
 
 type RSAKeyInfo struct {
@@ -71,6 +73,10 @@ type LoginResult struct {
 	TokenV3IssueResult  *TokenV3IssueResult `json:"tokenV3IssueResult,omitempty"`
 	Mid                 string              `json:"mid,omitempty"`
 	LastPrimaryBindTime string              `json:"lastPrimaryBindTime,omitempty"`
+	EncryptedKeyChain   string              `json:"encryptedKeyChain,omitempty"`
+	E2EEPublicKey       string              `json:"publicKey,omitempty"`
+	E2EEVersion         string              `json:"e2eeVersion,omitempty"`
+	E2EEKeyID           string              `json:"keyId,omitempty"`
 }
 
 type TokenV3IssueResult struct {
@@ -104,4 +110,10 @@ type LoginPollingResult struct {
 	} `json:"result"`
 	Timestamp string `json:"timestamp"`
 	AuthPhase string `json:"authPhase"`
+}
+
+type EncryptedIdentityV3 struct {
+	WrappedNonce  string `json:"wrappedNonce"`
+	KDFParameter1 string `json:"kdfParameter1"`
+	KDFParameter2 string `json:"kdfParameter2"`
 }
