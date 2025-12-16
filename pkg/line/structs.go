@@ -60,14 +60,33 @@ type RSAKeyInfo struct {
 }
 
 type LoginResult struct {
-	AuthToken   string `json:"authToken"`
-	Certificate string `json:"certificate"`
-	Verifier    string `json:"verifier"`
-	PinCode     string `json:"pinCode"`
-	Pin         string `json:"-"` // Generated locally
-	Type        int    `json:"type"`
-	Param       string `json:"param"` // Sometimes used
-	Message     string `json:"message"`
+	AuthToken           string              `json:"authToken"`
+	Certificate         string              `json:"certificate"`
+	Verifier            string              `json:"verifier"`
+	PinCode             string              `json:"pinCode"`
+	Pin                 string              `json:"-"` // Generated locally
+	Type                int                 `json:"type"`
+	Param               string              `json:"param"` // Sometimes used
+	Message             string              `json:"message"`
+	TokenV3IssueResult  *TokenV3IssueResult `json:"tokenV3IssueResult,omitempty"`
+	Mid                 string              `json:"mid,omitempty"`
+	LastPrimaryBindTime string              `json:"lastPrimaryBindTime,omitempty"`
+}
+
+type TokenV3IssueResult struct {
+	AccessToken             string                 `json:"accessToken"`
+	RefreshToken            string                 `json:"refreshToken"`
+	DurationUntilRefreshSec string                 `json:"durationUntilRefreshInSec"`
+	RefreshApiRetryPolicy   *RefreshApiRetryPolicy `json:"refreshApiRetryPolicy,omitempty"`
+	LoginSessionID          string                 `json:"loginSessionId"`
+	TokenIssueTimeEpochSec  string                 `json:"tokenIssueTimeEpochSec"`
+}
+
+type RefreshApiRetryPolicy struct {
+	InitialDelayInMillis string  `json:"initialDelayInMillis"`
+	MaxDelayInMillis     string  `json:"maxDelayInMillis"`
+	Multiplier           float64 `json:"multiplier"`
+	JitterRate           float64 `json:"jitterRate"`
 }
 
 type LoginPollingResult struct {

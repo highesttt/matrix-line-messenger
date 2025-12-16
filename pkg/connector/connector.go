@@ -237,7 +237,7 @@ type LineEmailLogin struct {
 	Email    string
 	Password string
 	Verifier string
-	
+
 	pollResult chan *line.LoginResult
 	pollErr    chan error
 	polling    bool
@@ -291,14 +291,32 @@ func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]
 
 		select {
 		case res := <-ll.pollResult:
+			fmt.Printf("[DEBUG] WaitForLogin returned: type=%d auth.len=%d v3.access.len=%d v3.refresh.len=%d cert.len=%d mid=%s\n",
+				res.Type,
+				len(res.AuthToken),
+				len(func() string {
+					if res.TokenV3IssueResult != nil {
+						return res.TokenV3IssueResult.AccessToken
+					}
+					return ""
+				}()),
+				len(func() string {
+					if res.TokenV3IssueResult != nil {
+						return res.TokenV3IssueResult.RefreshToken
+					}
+					return ""
+				}()),
+				len(res.Certificate),
+				res.Mid,
+			)
 			if res.AuthToken != "" {
 				return ll.finishLogin(ctx, res.AuthToken)
 			}
-			
+
 		case err := <-ll.pollErr:
 			ll.polling = false
 			return nil, fmt.Errorf("verification failed: %w", err)
-			
+
 		default:
 			// No result yet, return waiting step
 		}

@@ -141,10 +141,40 @@ func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 	if meta.EncryptedKeyChain != "" && meta.PublicKey != "" {
 		if err := c.ConfirmE2EELogin(verifier, meta.PublicKey, meta.EncryptedKeyChain); err != nil {
 			fmt.Printf("[DEBUG] confirmE2EELogin error: %v\n", err)
+		} else {
+			// After confirm succeeds, finalize login using the verifier to get our access token
+			if res, err := c.LoginV2WithVerifier(verifier); err != nil {
+				fmt.Printf("[DEBUG] loginV2 with verifier error: %v\n", err)
+			} else {
+				fmt.Printf(
+					"[DEBUG] loginV2 verifier success: mid=%s cert=%s auth.len=%d v3.access.len=%d v3.refresh.len=%d\n",
+					res.Mid,
+					res.Certificate,
+					len(res.AuthToken),
+					len(func() string {
+						if res.TokenV3IssueResult != nil {
+							return res.TokenV3IssueResult.AccessToken
+						}
+						return ""
+					}()),
+					len(func() string {
+						if res.TokenV3IssueResult != nil {
+							return res.TokenV3IssueResult.RefreshToken
+						}
+						return ""
+					}()),
+				)
+				return res, nil
+			}
 		}
 	}
 
 	if meta.AuthToken != "" || meta.Certificate != "" {
+		fmt.Printf(
+			"[DEBUG] polling metadata auth: authToken.len=%d cert=%s\n",
+			len(meta.AuthToken),
+			meta.Certificate,
+		)
 		return &LoginResult{
 			AuthToken:   meta.AuthToken,
 			Certificate: meta.Certificate,

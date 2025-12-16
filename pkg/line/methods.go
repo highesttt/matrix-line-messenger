@@ -1,6 +1,7 @@
 package line
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,6 +26,51 @@ func (c *Client) LoginV2(email, password, certificate, secret string) ([]byte, e
 		E2EEVersion:      1,
 	}
 	return c.callRPC("AuthService", "loginV2", req)
+}
+
+// LoginV2WithVerifier finalizes login using the verifier (post-E2EE confirm flow)
+func (c *Client) LoginV2WithVerifier(verifier string) (*LoginResult, error) {
+	req := LoginRequest{
+		Type:             1,
+		IdentityProvider: 1,
+		Identifier:       "",
+		Password:         "",
+		KeepLoggedIn:     false,
+		AccessLocation:   "",
+		SystemName:       "Chrome",
+		ModelName:        "",
+		Certificate:      "",
+		Verifier:         verifier,
+		Secret:           "",
+		E2EEVersion:      1,
+	}
+
+	respBytes, err := c.callRPC("AuthService", "loginV2", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var wrapper struct {
+		Code    int         `json:"code"`
+		Message string      `json:"message"`
+		Data    LoginResult `json:"data"`
+	}
+	if err := json.Unmarshal(respBytes, &wrapper); err != nil {
+		return nil, fmt.Errorf("failed to parse loginV2 (verifier) response: %w", err)
+	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("loginV2 with verifier failed: %s", wrapper.Message)
+	}
+
+	// Prefer the V3 token if present, otherwise fall back to legacy authToken
+	if wrapper.Data.TokenV3IssueResult != nil && wrapper.Data.TokenV3IssueResult.AccessToken != "" {
+		wrapper.Data.AuthToken = wrapper.Data.TokenV3IssueResult.AccessToken
+		c.AccessToken = wrapper.Data.TokenV3IssueResult.AccessToken
+	} else if wrapper.Data.AuthToken != "" {
+		c.AccessToken = wrapper.Data.AuthToken
+	}
+
+	return &wrapper.Data, nil
 }
 
 // GetProfile fetches the user's profile information
