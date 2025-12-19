@@ -11,16 +11,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/highesttt/mautrix-line-messenger/pkg/e2ee"
-	"github.com/highesttt/mautrix-line-messenger/pkg/line"
-	"github.com/rs/zerolog"
 	"go.mau.fi/util/ptr"
+
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
+
+	"github.com/highesttt/mautrix-line-messenger/pkg/e2ee"
+	"github.com/highesttt/mautrix-line-messenger/pkg/line"
+	"github.com/rs/zerolog"
 )
 
 type LineClient struct {

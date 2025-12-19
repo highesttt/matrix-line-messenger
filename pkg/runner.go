@@ -178,18 +178,6 @@ func (r *Runner) start() error {
 	return r.cmd.Start()
 }
 
-func (r *Runner) stop() error {
-	if r.cmd != nil && r.cmd.Process != nil {
-		return r.cmd.Process.Kill()
-	}
-	_, err := r.cmd.Process.Wait()
-	if err != nil {
-		return err
-	}
-	r.wg.Wait()
-	return nil
-}
-
 func (r *Runner) GetSignature(reqPath, body, accessToken string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
