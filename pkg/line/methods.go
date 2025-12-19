@@ -297,4 +297,3 @@ func (c *Client) GetMessageBoxes() ([]byte, error) {
 	// "2" is the syncReason
 	return c.callRPC("TalkService", "getMessageBoxes", reqStruct, 2)
 }
-
