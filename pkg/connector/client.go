@@ -20,9 +20,10 @@ import (
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
 
+	"github.com/rs/zerolog"
+
 	"github.com/highesttt/mautrix-line-messenger/pkg/e2ee"
 	"github.com/highesttt/mautrix-line-messenger/pkg/line"
-	"github.com/rs/zerolog"
 )
 
 type LineClient struct {
