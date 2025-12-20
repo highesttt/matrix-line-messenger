@@ -265,6 +265,11 @@ func (c *Client) SendMessage(reqSeq int64, msg *Message) error {
 	return nil
 }
 
+func (c *Client) SendChatChecked(chatMid, messageID string) error {
+	_, err := c.callRPC("TalkService", "sendChatChecked", 0, chatMid, messageID)
+	return err
+}
+
 // GetContactsV2 fetches contact details for a list of MIDs.
 func (c *Client) GetContactsV2(mids []string) (*ContactsResponse, error) {
 	req := GetContactsV2Request{TargetUserMids: mids}
