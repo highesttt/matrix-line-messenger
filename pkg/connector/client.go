@@ -378,11 +378,7 @@ func (lc *LineClient) HandleMatrixReadReceipt(ctx context.Context, read *bridgev
 	}
 
 	client := line.NewClient(lc.AccessToken)
-	err := client.SendChatChecked(string(read.Portal.ID), targetID)
-	if err != nil {
-		return err
-	}
-	return nil
+	return client.SendChatChecked(string(read.Portal.ID), targetID)
 }
 
 func (lc *LineClient) IsLoggedIn() bool { return lc.AccessToken != "" }
