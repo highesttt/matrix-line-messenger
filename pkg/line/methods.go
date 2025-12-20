@@ -265,6 +265,7 @@ func (c *Client) SendMessage(reqSeq int64, msg *Message) error {
 	return nil
 }
 
+// SendChatChecked sends a read receipt for a message in a chat
 func (c *Client) SendChatChecked(chatMid, messageID string) error {
 	_, err := c.callRPC("TalkService", "sendChatChecked", 0, chatMid, messageID)
 	return err
