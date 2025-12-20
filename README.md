@@ -15,7 +15,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 - [x] Decrypt messages
 - [x] Decrypt usernames
 - [x] Sending messages
-- [ ] Read receipts
+- [x] Read receipts
 - [ ] Typing indicators
 - [ ] Reaction support
 - [ ] Reply support
@@ -23,3 +23,4 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 - [ ] Group chats
 - [ ] Media messages (images, videos, voice notes, files)
 - [ ] Sticker support
+
