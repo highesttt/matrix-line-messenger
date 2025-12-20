@@ -41,6 +41,7 @@ type LineClient struct {
 }
 
 var _ bridgev2.NetworkAPI = (*LineClient)(nil)
+var _ bridgev2.ReadReceiptHandlingNetworkAPI = (*LineClient)(nil)
 
 func (lc *LineClient) Connect(ctx context.Context) {
 	if lc.peerKeys == nil {
@@ -253,6 +254,26 @@ func (lc *LineClient) handleOperation(_ context.Context, op line.Operation) {
 	// Type 25 = SEND_MESSAGE (Message sent by you from another device)
 	// Type 26 = RECEIVE_MESSAGE (Message received from another user)
 
+	if op.Type == 55 {
+		senderID := makeUserID(op.Param1)
+		portalID := makePortalID(op.Param2)
+		// Param 2 is the group id or sender id in 1:1 chats
+
+		ts, _ := op.CreatedTime.Int64()
+		lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.Receipt{
+			EventMeta: simplevent.EventMeta{
+				Type: bridgev2.RemoteEventReadReceipt,
+				PortalKey: networkid.PortalKey{
+					ID:       portalID,
+					Receiver: lc.UserLogin.ID,
+				},
+				Timestamp: time.UnixMilli(ts),
+				Sender:    bridgev2.EventSender{Sender: senderID},
+			},
+			ReadUpTo: time.UnixMilli(ts),
+		})
+	}
+
 	if op.Type == 25 {
 		lc.reqSeqMu.Lock()
 		_, ok := lc.sentReqSeqs[op.ReqSeq]
@@ -338,6 +359,31 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 }
 
 func (lc *LineClient) Disconnect() {}
+
+func (lc *LineClient) HandleMatrixReadReceipt(ctx context.Context, read *bridgev2.MatrixReadReceipt) error {
+	if read.ReadUpTo.IsZero() && read.EventID == "" {
+		return nil
+	}
+
+	targetID := string(read.EventID)
+	if read.EventID != "" {
+		msg, err := lc.UserLogin.Bridge.DB.Message.GetPartByMXID(ctx, read.EventID)
+		if err == nil && msg != nil && msg.ID != "" {
+			targetID = string(msg.ID)
+		}
+	}
+
+	if targetID == "" || strings.HasPrefix(targetID, "$") {
+		return nil
+	}
+
+	client := line.NewClient(lc.AccessToken)
+	err := client.SendChatChecked(string(read.Portal.ID), targetID)
+	if err != nil {
+		return err
+	}
+	return nil
+}
 
 func (lc *LineClient) IsLoggedIn() bool { return lc.AccessToken != "" }
 
