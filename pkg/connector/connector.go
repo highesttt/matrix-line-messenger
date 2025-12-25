@@ -86,6 +86,7 @@ func (lc *LineConnector) GetDBMetaTypes() database.MetaTypes {
 
 type UserLoginMetadata struct {
 	AccessToken       string            `json:"access_token"`
+	RefreshToken      string            `json:"refresh_token,omitempty"`
 	Email             string            `json:"email,omitempty"`
 	Password          string            `json:"password,omitempty"`
 	Mid               string            `json:"mid,omitempty"`
@@ -99,10 +100,11 @@ type UserLoginMetadata struct {
 func (lc *LineConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin) error {
 	meta := login.Metadata.(*UserLoginMetadata)
 	login.Client = &LineClient{
-		UserLogin:   login,
-		AccessToken: meta.AccessToken,
-		Mid:         meta.Mid,
-		HTTPClient:  &http.Client{Timeout: 10 * time.Second},
+		UserLogin:    login,
+		AccessToken:  meta.AccessToken,
+		RefreshToken: meta.RefreshToken,
+		Mid:          meta.Mid,
+		HTTPClient:   &http.Client{Timeout: 10 * time.Second},
 	}
 	return nil
 }
@@ -261,8 +263,10 @@ func (ll *LineEmailLogin) finishLogin(ctx context.Context, res *line.LoginResult
 	}
 
 	token := res.AuthToken
+	refreshToken := ""
 	if token == "" && res.TokenV3IssueResult != nil {
 		token = res.TokenV3IssueResult.AccessToken
+		refreshToken = res.TokenV3IssueResult.RefreshToken
 	}
 	if token == "" {
 		return nil, fmt.Errorf("missing access token in login result")
@@ -279,7 +283,7 @@ func (ll *LineEmailLogin) finishLogin(ctx context.Context, res *line.LoginResult
 		displayName = "LINE User"
 	}
 
-	meta := &UserLoginMetadata{AccessToken: token, Email: ll.Email, Password: ll.Password, Mid: res.Mid}
+	meta := &UserLoginMetadata{AccessToken: token, RefreshToken: refreshToken, Email: ll.Email, Password: ll.Password, Mid: res.Mid}
 	if res.EncryptedKeyChain != "" && res.E2EEPublicKey != "" {
 		meta.EncryptedKeyChain = res.EncryptedKeyChain
 		meta.E2EEPublicKey = res.E2EEPublicKey
@@ -306,9 +310,10 @@ func (ll *LineEmailLogin) finishLogin(ctx context.Context, res *line.LoginResult
 	}, &bridgev2.NewLoginParams{
 		LoadUserLogin: func(ctx context.Context, login *bridgev2.UserLogin) error {
 			login.Client = &LineClient{
-				UserLogin:   login,
-				AccessToken: token,
-				HTTPClient:  &http.Client{Timeout: 10 * time.Second},
+				UserLogin:    login,
+				AccessToken:  token,
+				RefreshToken: refreshToken,
+				HTTPClient:   &http.Client{Timeout: 10 * time.Second},
 			}
 			return nil
 		},

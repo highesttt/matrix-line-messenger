@@ -20,7 +20,6 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 - [ ] Reaction support
 - [ ] Reply support
 - [ ] Prefetch chats
-- [ ] Group chats
+- [x] Group chats
 - [ ] Media messages (images, videos, voice notes, files)
 - [ ] Sticker support
-

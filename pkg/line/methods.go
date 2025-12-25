@@ -104,8 +104,44 @@ func (c *Client) GetEncryptedIdentityV3() (*EncryptedIdentityV3, error) {
 	if err := json.Unmarshal(resp, &wrapper); err != nil {
 		return nil, err
 	}
+	return &wrapper.Data, nil
+}
+
+func (c *Client) GetE2EEGroupSharedKey(chatMid string, groupKeyID int) (*E2EEGroupSharedKey, error) {
+	// args: [1, chatMid, groupKeyID]
+	resp, err := c.callRPC("TalkService", "getE2EEGroupSharedKey", 1, chatMid, groupKeyID)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int                `json:"code"`
+		Message string             `json:"message"`
+		Data    E2EEGroupSharedKey `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
 	if wrapper.Code != 0 {
-		return nil, fmt.Errorf("getEncryptedIdentityV3 failed: %s", wrapper.Message)
+		return nil, fmt.Errorf("getE2EEGroupSharedKey failed: %s", wrapper.Message)
+	}
+	return &wrapper.Data, nil
+}
+
+func (c *Client) GetLastE2EEGroupSharedKey(chatMid string) (*E2EEGroupSharedKey, error) {
+	resp, err := c.callRPC("TalkService", "getLastE2EEGroupSharedKey", 1, chatMid)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int                `json:"code"`
+		Message string             `json:"message"`
+		Data    E2EEGroupSharedKey `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("getLastE2EEGroupSharedKey failed: %s", wrapper.Message)
 	}
 	return &wrapper.Data, nil
 }
@@ -127,8 +163,12 @@ func (c *Client) NegotiateE2EEPublicKey(mid string) (*E2EEPublicKey, error) {
 	if wrapper.Code != 0 {
 		return nil, fmt.Errorf("negotiateE2EEPublicKey failed: %s", wrapper.Message)
 	}
+	return parseE2EEPublicKey(wrapper.Data)
+}
+
+func parseE2EEPublicKey(rawData []byte) (*E2EEPublicKey, error) {
 	var data map[string]any
-	if err := json.Unmarshal(wrapper.Data, &data); err != nil {
+	if err := json.Unmarshal(rawData, &data); err != nil {
 		return nil, err
 	}
 
@@ -234,7 +274,7 @@ func (c *Client) NegotiateE2EEPublicKey(mid string) (*E2EEPublicKey, error) {
 		keyID = findInt64(data)
 	}
 	if pub == "" || keyID == 0 {
-		return nil, fmt.Errorf("negotiateE2EEPublicKey: missing fields (pub=%t keyID=%d raw=%s)", pub != "", keyID, string(wrapper.Data))
+		return nil, fmt.Errorf("missing fields (pub=%t keyID=%d raw=%s)", pub != "", keyID, string(rawData))
 	}
 
 	return &E2EEPublicKey{
@@ -245,6 +285,26 @@ func (c *Client) NegotiateE2EEPublicKey(mid string) (*E2EEPublicKey, error) {
 		CreatedTime:  json.Number(strconv.FormatInt(findInt64(data["createdTime"]), 10)),
 		RenewalCount: int(findInt64(data["renewalCount"])),
 	}, nil
+}
+
+func (c *Client) GetE2EEPublicKey(mid string, keyVersion, keyID int) (*E2EEPublicKey, error) {
+	resp, err := c.callRPC("TalkService", "getE2EEPublicKey", mid, keyVersion, keyID)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("getE2EEPublicKey failed: %s", wrapper.Message)
+	}
+
+	return parseE2EEPublicKey(wrapper.Data)
 }
 
 func (c *Client) SendMessage(reqSeq int64, msg *Message) error {
@@ -292,14 +352,49 @@ func (c *Client) GetContactsV2(mids []string) (*ContactsResponse, error) {
 	return &wrapper.Data, nil
 }
 
-func (c *Client) GetMessageBoxes() ([]byte, error) {
-	reqStruct := map[string]interface{}{
-		"activeOnly":                     true,
-		"unreadOnly":                     false,
-		"messageBoxCountLimit":           100,
-		"withUnreadCount":                true,
-		"lastMessagesPerMessageBoxCount": 1,
+func (c *Client) GetAllChatMids(withMemberChats, withInvitedChats bool) (*GetAllChatMidsResponse, error) {
+	req := GetAllChatMidsRequest{
+		WithMemberChats:  withMemberChats,
+		WithInvitedChats: withInvitedChats,
 	}
-	// "2" is the syncReason
-	return c.callRPC("TalkService", "getMessageBoxes", reqStruct, 2)
+	resp, err := c.callRPC("TalkService", "getAllChatMids", req, 2)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int                    `json:"code"`
+		Message string                 `json:"message"`
+		Data    GetAllChatMidsResponse `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("getAllChatMids failed: %s", wrapper.Message)
+	}
+	return &wrapper.Data, nil
+}
+
+func (c *Client) GetChats(mids []string, withMembers, withInvitees bool) (*GetChatsResponse, error) {
+	req := GetChatsRequest{
+		ChatMids:     mids,
+		WithMembers:  withMembers,
+		WithInvitees: withInvitees,
+	}
+	resp, err := c.callRPC("TalkService", "getChats", req, 2)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int              `json:"code"`
+		Message string           `json:"message"`
+		Data    GetChatsResponse `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("getChats failed: %s", wrapper.Message)
+	}
+	return &wrapper.Data, nil
 }

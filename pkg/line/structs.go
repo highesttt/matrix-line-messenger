@@ -152,3 +152,67 @@ type Contact struct {
 	StatusMessage string `json:"statusMessage"`
 	PicturePath   string `json:"picturePath"`
 }
+
+type E2EEGroupSharedKey struct {
+	KeyVersion         int    `json:"keyVersion"`
+	GroupKeyID         int    `json:"groupKeyId"`
+	Creator            string `json:"creator"`
+	CreatorKeyID       int    `json:"creatorKeyId"`
+	Receiver           string `json:"receiver"`
+	ReceiverKeyID      int    `json:"receiverKeyId"`
+	EncryptedSharedKey string `json:"encryptedSharedKey"`
+	AllowedTypes       []int  `json:"allowedTypes"`
+	SpecVersion        int    `json:"specVersion"`
+}
+
+type RefreshAccessTokenRequest struct {
+	RefreshToken string `json:"refreshToken"`
+	RetryCount   int    `json:"retryCount"`
+}
+
+type GetAllChatMidsRequest struct {
+	WithMemberChats  bool `json:"withMemberChats"`
+	WithInvitedChats bool `json:"withInvitedChats"`
+}
+
+type GetAllChatMidsResponse struct {
+	MemberChatMids  []string `json:"memberChatMids"`
+	InvitedChatMids []string `json:"invitedChatMids"`
+}
+
+type GetChatsRequest struct {
+	ChatMids     []string `json:"chatMids"`
+	WithMembers  bool     `json:"withMembers"`
+	WithInvitees bool     `json:"withInvitees"`
+}
+
+type GetChatsResponse struct {
+	Chats []Chat `json:"chats"`
+}
+
+type Chat struct {
+	ChatMid              string    `json:"chatMid"`
+	CreatedTime          int64     `json:"createdTime"`
+	NotificationDisabled bool      `json:"notificationDisabled"`
+	FavoriteTimestamp    int64     `json:"favoriteTimestamp"`
+	ChatName             string    `json:"chatName"`
+	PicturePath          string    `json:"picturePath"`
+	Extra                ChatExtra `json:"extra"`
+	Type                 int       `json:"type"` // 0=GROUP, 1=ROOM
+}
+
+type ChatExtra struct {
+	GroupExtra *GroupExtra `json:"groupExtra,omitempty"`
+	PeerExtra  *PeerExtra  `json:"peerExtra,omitempty"`
+}
+
+type GroupExtra struct {
+	CreatorMid       string          `json:"creatorMid"`
+	PreventedMids    map[string]bool `json:"preventedMids"`
+	InvitationTicket string          `json:"invitationTicket"`
+	MemberMids       map[string]bool `json:"memberMids"`
+	InviteeMids      map[string]bool `json:"inviteeMids"`
+}
+
+type PeerExtra struct {
+}

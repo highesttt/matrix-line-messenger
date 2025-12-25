@@ -27,12 +27,13 @@ import (
 )
 
 type LineClient struct {
-	UserLogin   *bridgev2.UserLogin
-	AccessToken string
-	Mid         string
-	HTTPClient  *http.Client
-	E2EE        *e2ee.Manager
-	peerKeys    map[string]peerKeyInfo
+	UserLogin    *bridgev2.UserLogin
+	AccessToken  string
+	RefreshToken string
+	Mid          string
+	HTTPClient   *http.Client
+	E2EE         *e2ee.Manager
+	peerKeys     map[string]peerKeyInfo
 
 	reqSeqMu    sync.Mutex
 	sentReqSeqs map[int]time.Time
@@ -42,6 +43,39 @@ type LineClient struct {
 
 var _ bridgev2.NetworkAPI = (*LineClient)(nil)
 var _ bridgev2.ReadReceiptHandlingNetworkAPI = (*LineClient)(nil)
+
+func (lc *LineClient) refreshAndSave(ctx context.Context) error {
+	if lc.RefreshToken == "" {
+		return fmt.Errorf("no refresh token available")
+	}
+
+	client := line.NewClient(lc.AccessToken)
+	res, err := client.RefreshAccessToken(lc.RefreshToken)
+	if err != nil {
+		return fmt.Errorf("failed to refresh token: %w", err)
+	}
+
+	lc.AccessToken = res.AccessToken
+	if res.RefreshToken != "" {
+		lc.RefreshToken = res.RefreshToken
+	}
+
+	meta := lc.UserLogin.Metadata.(*UserLoginMetadata)
+	meta.AccessToken = lc.AccessToken
+	meta.RefreshToken = lc.RefreshToken
+	err = lc.UserLogin.Save(ctx)
+	if err != nil {
+		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to save refreshed tokens to DB")
+	} else {
+		lc.UserLogin.Bridge.Log.Info().Msg("Tokens refreshed and saved")
+	}
+
+	return nil
+}
+
+func (lc *LineClient) isRefreshRequired(err error) bool {
+	return strings.Contains(err.Error(), "\"code\":119") || strings.Contains(err.Error(), "Access token refresh required")
+}
 
 func (lc *LineClient) Connect(ctx context.Context) {
 	if lc.peerKeys == nil {
@@ -127,7 +161,18 @@ func (lc *LineClient) Connect(ctx context.Context) {
 
 		// Storage key is optional for runtime decrypt/encrypt; try it for file support
 		client := line.NewClient(lc.AccessToken)
-		if ei3, err := client.GetEncryptedIdentityV3(); err == nil {
+		ei3, err := client.GetEncryptedIdentityV3()
+		if err != nil && lc.isRefreshRequired(err) {
+			lc.UserLogin.Bridge.Log.Info().Msg("Access token expired, refreshing...")
+			if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+				client = line.NewClient(lc.AccessToken)
+				ei3, err = client.GetEncryptedIdentityV3()
+			} else {
+				lc.UserLogin.Bridge.Log.Error().Err(errRefresh).Msg("Failed to refresh token")
+			}
+		}
+
+		if err == nil {
 			if err := mgr.InitStorage(ei3.WrappedNonce, ei3.KDFParameter1, ei3.KDFParameter2); err != nil {
 				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to init storage key")
 			} else if data, err := mgr.LoadSecureDataFromFile(string(lc.UserLogin.ID)); err == nil {
@@ -146,45 +191,157 @@ func (lc *LineClient) Connect(ctx context.Context) {
 
 func (lc *LineClient) syncChats(ctx context.Context) {
 	client := line.NewClient(lc.AccessToken)
-	resp, err := client.GetMessageBoxes()
+	midsResp, err := client.GetAllChatMids(true, true)
+	if err != nil && lc.isRefreshRequired(err) {
+		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+			client = line.NewClient(lc.AccessToken)
+			midsResp, err = client.GetAllChatMids(true, true)
+		}
+	}
 	if err != nil {
-		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to sync chats")
+		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to fetch all chat mids")
 		return
 	}
 
-	var data struct {
-		Data struct {
-			MessageBoxes []struct {
-				ID string `json:"id"`
-			} `json:"messageBoxes"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(resp, &data); err != nil {
-		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to parse message boxes")
+	allMids := append(midsResp.MemberChatMids, midsResp.InvitedChatMids...)
+	if len(allMids) == 0 {
 		return
 	}
 
-	for _, mb := range data.Data.MessageBoxes {
-		portalKey := networkid.PortalKey{ID: makePortalID(mb.ID), Receiver: lc.UserLogin.ID}
-		portal, err := lc.UserLogin.Bridge.GetPortalByKey(ctx, portalKey)
-		if err != nil || portal == nil {
-			continue
+	chunkSize := 20
+	for i := 0; i < len(allMids); i += chunkSize {
+		end := i + chunkSize
+		if end > len(allMids) {
+			end = len(allMids)
 		}
-
-		info, err := lc.GetChatInfo(ctx, portal)
+		batch := allMids[i:end]
+		chatsResp, err := client.GetChats(batch, true, true)
+		if err != nil && lc.isRefreshRequired(err) {
+			if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+				client = line.NewClient(lc.AccessToken)
+				chatsResp, err = client.GetChats(batch, true, true)
+			}
+		}
 		if err != nil {
+			lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to fetch batch of chats")
 			continue
 		}
 
-		lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.ChatResync{
-			EventMeta: simplevent.EventMeta{
-				Type:      bridgev2.RemoteEventChatResync,
-				PortalKey: portalKey,
-				Timestamp: time.Now(),
-			},
-			ChatInfo: info,
-		})
+		for _, chat := range chatsResp.Chats {
+			portalKey := networkid.PortalKey{ID: makePortalID(chat.ChatMid), Receiver: lc.UserLogin.ID}
+
+			info := lc.chatToChatInfo(&chat)
+			lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.ChatResync{
+				EventMeta: simplevent.EventMeta{
+					Type:      bridgev2.RemoteEventChatResync,
+					PortalKey: portalKey,
+					Timestamp: time.Now(),
+				},
+				ChatInfo: info,
+			})
+		}
 	}
+}
+
+func (lc *LineClient) chatToChatInfo(chat *line.Chat) *bridgev2.ChatInfo {
+	var avatar *bridgev2.Avatar
+	if chat.PicturePath != "" {
+		avatar = &bridgev2.Avatar{
+			ID: networkid.AvatarID(chat.PicturePath),
+			Get: func(ctx context.Context) ([]byte, error) {
+				return lc.GetAvatar(ctx, networkid.AvatarID(chat.PicturePath))
+			},
+		}
+	}
+
+	members := []bridgev2.ChatMember{
+		{
+			EventSender: bridgev2.EventSender{
+				IsFromMe: true,
+				Sender:   networkid.UserID(lc.UserLogin.ID),
+			},
+			Membership: event.MembershipJoin,
+			PowerLevel: ptr.Ptr(0),
+		},
+	}
+
+	if chat.Extra.GroupExtra != nil {
+		if chat.Extra.GroupExtra.CreatorMid == lc.Mid {
+			members[0].PowerLevel = ptr.Ptr(100)
+		}
+		for m := range chat.Extra.GroupExtra.MemberMids {
+			if m == lc.Mid || m == string(lc.UserLogin.ID) {
+				continue
+			}
+			members = append(members, bridgev2.ChatMember{
+				EventSender: bridgev2.EventSender{
+					Sender: makeUserID(m),
+				},
+				Membership: event.MembershipJoin,
+			})
+		}
+		for m := range chat.Extra.GroupExtra.InviteeMids {
+			if m == lc.Mid || m == string(lc.UserLogin.ID) {
+				continue
+			}
+			members = append(members, bridgev2.ChatMember{
+				EventSender: bridgev2.EventSender{
+					Sender: makeUserID(m),
+				},
+				Membership: event.MembershipInvite,
+			})
+		}
+	}
+
+	name := chat.ChatName
+	if name == "" && chat.Extra.GroupExtra != nil {
+		name = lc.generateNameFromMembers(chat.Extra.GroupExtra.MemberMids)
+	}
+
+	return &bridgev2.ChatInfo{
+		Name:    &name,
+		Avatar:  avatar,
+		Members: &bridgev2.ChatMemberList{IsFull: true, Members: members},
+	}
+}
+
+func (lc *LineClient) generateNameFromMembers(members map[string]bool) string {
+	var names []string
+	count := 0
+	for mid := range members {
+		if mid == string(lc.UserLogin.ID) || mid == lc.Mid || strings.HasPrefix(mid, "c") || strings.HasPrefix(mid, "r") {
+			continue
+		}
+		if contact, ok := lc.contactCache[mid]; ok && contact.DisplayName != "" {
+			names = append(names, contact.DisplayName)
+		}
+		count++
+		if count >= 20 {
+			break
+		}
+	}
+
+	finalNames := names
+	if len(names) > 3 {
+		finalNames = names[:3]
+	}
+
+	if len(finalNames) == 0 {
+		return ""
+	}
+
+	result := strings.Join(finalNames, ", ")
+	actualMemberCount := 0
+	for m := range members {
+		if m != string(lc.UserLogin.ID) && m != lc.Mid && !strings.HasPrefix(m, "c") && !strings.HasPrefix(m, "r") {
+			actualMemberCount++
+		}
+	}
+	remaining := actualMemberCount - len(finalNames)
+	if remaining > 0 {
+		result += fmt.Sprintf(" and %d others", remaining)
+	}
+	return result
 }
 
 func (lc *LineClient) pollLoop(ctx context.Context) {
@@ -243,6 +400,11 @@ func (lc *LineClient) pollLoop(ctx context.Context) {
 			if err != nil {
 				if err.Error() != "EOF" {
 					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("SSE Disconnected")
+					if strings.Contains(err.Error(), "SSE error: 401") || strings.Contains(err.Error(), "SSE error: 403") {
+						if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+							client = line.NewClient(lc.AccessToken)
+						}
+					}
 				}
 				time.Sleep(3 * time.Second)
 			}
@@ -254,10 +416,16 @@ func (lc *LineClient) handleOperation(_ context.Context, op line.Operation) {
 	// Type 25 = SEND_MESSAGE (Message sent by you from another device)
 	// Type 26 = RECEIVE_MESSAGE (Message received from another user)
 
+	if op.Type == 122 || op.Type == 121 {
+		lc.UserLogin.Bridge.Log.Info().Str("chat_mid", op.Param1).Int("op_type", op.Type).Msg("Received chat update operation")
+		go lc.syncSingleChat(context.Background(), op.Param1)
+	}
+
 	if op.Type == 55 {
-		senderID := makeUserID(op.Param1)
-		portalID := makePortalID(op.Param2)
-		// Param 2 is the group id or sender id in 1:1 chats
+		portalID := makePortalID(op.Param1)
+		senderID := makeUserID(op.Param2)
+		// Param 1 is the group id or sender id in 1:1 chats
+		// Param 2 is the user who read the message
 
 		ts, _ := op.CreatedTime.Int64()
 		lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.Receipt{
@@ -290,6 +458,53 @@ func (lc *LineClient) handleOperation(_ context.Context, op line.Operation) {
 	}
 }
 
+func (lc *LineClient) syncSingleChat(ctx context.Context, chatMid string) {
+	client := line.NewClient(lc.AccessToken)
+	chatsResp, err := client.GetChats([]string{chatMid}, true, true)
+	if err != nil && lc.isRefreshRequired(err) {
+		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+			client = line.NewClient(lc.AccessToken)
+			chatsResp, err = client.GetChats([]string{chatMid}, true, true)
+		}
+	}
+	if err != nil {
+		lc.UserLogin.Bridge.Log.Warn().Err(err).Str("chat_mid", chatMid).Msg("Failed to fetch chat info")
+		return
+	}
+	if len(chatsResp.Chats) == 0 {
+		return
+	}
+	chat := chatsResp.Chats[0]
+	portalKey := networkid.PortalKey{ID: makePortalID(chat.ChatMid), Receiver: lc.UserLogin.ID}
+
+	if chat.ChatName == "" && chat.Extra.GroupExtra != nil {
+		var missingMids []string
+		for mid := range chat.Extra.GroupExtra.MemberMids {
+			if _, ok := lc.contactCache[mid]; !ok && mid != string(lc.UserLogin.ID) {
+				missingMids = append(missingMids, mid)
+			}
+		}
+		if len(missingMids) > 0 {
+			res, err := client.GetContactsV2(missingMids)
+			if err == nil && res != nil && res.Contacts != nil {
+				for mid, wrapper := range res.Contacts {
+					lc.contactCache[mid] = wrapper.Contact
+				}
+			}
+		}
+	}
+
+	info := lc.chatToChatInfo(&chat)
+	lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.ChatResync{
+		EventMeta: simplevent.EventMeta{
+			Type:      bridgev2.RemoteEventChatResync,
+			PortalKey: portalKey,
+			Timestamp: time.Now(),
+		},
+		ChatInfo: info,
+	})
+}
+
 func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 	senderID := makeUserID(msg.From)
 
@@ -310,12 +525,40 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 	if bodyText == "" && len(msg.Chunks) > 0 {
 		bodyText = "[Unable to decrypt message. Open an issue on GitHub.]"
 		if lc.E2EE != nil {
-			if pt, err := lc.E2EE.DecryptMessageV2(msg); err == nil && pt != "" {
-				bodyText = pt
+			if msg.ToType == 1 || msg.ToType == 2 {
+				if len(msg.Chunks) >= 5 {
+					if gkID, err := e2ee.DecodeKeyID(msg.Chunks[len(msg.Chunks)-1]); err == nil && gkID != 0 {
+						if errFetch := lc.fetchAndUnwrapGroupKey(context.Background(), portalIDStr, gkID); errFetch != nil {
+							lc.UserLogin.Bridge.Log.Debug().Err(errFetch).Int("key_id", gkID).Str("chat_mid", portalIDStr).Msg("Prefetch group key before decrypt failed")
+						}
+					}
+				}
+
+				pt, keyID, err := lc.E2EE.DecryptGroupMessage(msg, portalIDStr)
+				if err == nil && pt != "" {
+					bodyText = pt
+				} else {
+					lc.UserLogin.Bridge.Log.Debug().Err(err).Int("key_id", keyID).Str("chat_mid", portalIDStr).Msg("DecryptGroupMessage failed, trying to fetch key")
+					if keyID != 0 {
+						lc.ensurePeerKeyForMessage(context.Background(), msg)
+						if errFetch := lc.fetchAndUnwrapGroupKey(context.Background(), portalIDStr, keyID); errFetch != nil {
+							lc.UserLogin.Bridge.Log.Warn().Err(errFetch).Int("key_id", keyID).Str("chat_mid", portalIDStr).Msg("Failed to fetch/unwrap group key")
+						} else if ptRetry, _, errRetry := lc.E2EE.DecryptGroupMessage(msg, portalIDStr); errRetry == nil && ptRetry != "" {
+							bodyText = ptRetry
+						} else if errRetry != nil {
+							lc.UserLogin.Bridge.Log.Warn().Err(errRetry).Msg("DecryptGroupMessage retry failed")
+						}
+					}
+				}
 			} else {
-				lc.ensurePeerKeyForMessage(context.Background(), msg)
-				if ptRetry, errRetry := lc.E2EE.DecryptMessageV2(msg); errRetry == nil && ptRetry != "" {
-					bodyText = ptRetry
+				// 1-1 Message
+				if pt, err := lc.E2EE.DecryptMessageV2(msg); err == nil && pt != "" {
+					bodyText = pt
+				} else {
+					lc.ensurePeerKeyForMessage(context.Background(), msg)
+					if ptRetry, errRetry := lc.E2EE.DecryptMessageV2(msg); errRetry == nil && ptRetry != "" {
+						bodyText = ptRetry
+					}
 				}
 			}
 		}
@@ -398,6 +641,26 @@ func (lc *LineClient) IsThisUser(ctx context.Context, userID networkid.UserID) b
 }
 
 func (lc *LineClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+	mid := string(portal.ID)
+	lowerMid := strings.ToLower(mid)
+	if strings.HasPrefix(lowerMid, "c") || strings.HasPrefix(lowerMid, "r") {
+		client := line.NewClient(lc.AccessToken)
+		res, err := client.GetChats([]string{mid}, true, true)
+		if err != nil && lc.isRefreshRequired(err) {
+			if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+				client = line.NewClient(lc.AccessToken)
+				res, err = client.GetChats([]string{mid}, true, true)
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(res.Chats) == 0 {
+			return nil, fmt.Errorf("chat not found")
+		}
+		return lc.chatToChatInfo(&res.Chats[0]), nil
+	}
+
 	contact := lc.getContact(string(portal.ID))
 	var avatar *bridgev2.Avatar
 	if contact.PicturePath != "" {
@@ -458,6 +721,12 @@ func (lc *LineClient) getContact(mid string) line.Contact {
 	}
 	client := line.NewClient(lc.AccessToken)
 	res, err := client.GetContactsV2([]string{mid})
+	if err != nil && lc.isRefreshRequired(err) {
+		if errRefresh := lc.refreshAndSave(context.TODO()); errRefresh == nil {
+			client = line.NewClient(lc.AccessToken)
+			res, err = client.GetContactsV2([]string{mid})
+		}
+	}
 	if err == nil && res != nil && res.Contacts != nil {
 		if wrapper, ok := res.Contacts[mid]; ok {
 			lc.contactCache[mid] = wrapper.Contact
@@ -489,6 +758,66 @@ func guessToType(mid string) int {
 	return 0 // USER
 }
 
+// fetchAndUnwrapGroupKey retrieves a specific group key (or the latest when groupKeyID == 0)
+// and unwraps it so the E2EE manager can encrypt/decrypt group messages.
+func (lc *LineClient) fetchAndUnwrapGroupKey(ctx context.Context, chatMid string, groupKeyID int) error {
+	if lc.E2EE == nil {
+		return fmt.Errorf("E2EE manager not initialized")
+	}
+
+	client := line.NewClient(lc.AccessToken)
+	fetch := func() (*line.E2EEGroupSharedKey, error) {
+		if groupKeyID > 0 {
+			return client.GetE2EEGroupSharedKey(chatMid, groupKeyID)
+		}
+		return client.GetLastE2EEGroupSharedKey(chatMid)
+	}
+
+	sharedKey, err := fetch()
+	if err != nil && lc.isRefreshRequired(err) {
+		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+			client = line.NewClient(lc.AccessToken)
+			sharedKey, err = fetch()
+		} else {
+			return fmt.Errorf("failed to refresh token before fetching group key: %w", errRefresh)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if sharedKey == nil {
+		return fmt.Errorf("no group shared key returned for %s", chatMid)
+	}
+
+	lc.UserLogin.Bridge.Log.Debug().
+		Str("chat_mid", chatMid).
+		Int("group_key_id", sharedKey.GroupKeyID).
+		Int("creator_key_id", sharedKey.CreatorKeyID).
+		Int("receiver_key_id", sharedKey.ReceiverKeyID).
+		Msg("Fetched group shared key")
+
+	if _, _, err := lc.ensurePeerKey(ctx, sharedKey.Creator); err != nil {
+		return fmt.Errorf("failed to ensure creator key: %w", err)
+	}
+	if _, _, err := lc.ensurePeerKeyByID(ctx, sharedKey.Creator, sharedKey.CreatorKeyID); err != nil {
+		return fmt.Errorf("failed to ensure creator key id %d: %w", sharedKey.CreatorKeyID, err)
+	}
+
+	unwrappedID, err := lc.E2EE.UnwrapGroupSharedKey(chatMid, sharedKey)
+	if err != nil {
+		return fmt.Errorf("failed to unwrap group key: %w", err)
+	}
+
+	lc.UserLogin.Bridge.Log.Debug().
+		Str("chat_mid", chatMid).
+		Int("group_key_id", sharedKey.GroupKeyID).
+		Int("receiver_key_id", sharedKey.ReceiverKeyID).
+		Int("unwrapped_id", unwrappedID).
+		Msg("Unwrapped group shared key")
+
+	return nil
+}
+
 func (lc *LineClient) ensurePeerKey(_ context.Context, mid string) (int, string, error) {
 	if lc.peerKeys == nil {
 		lc.peerKeys = make(map[string]peerKeyInfo)
@@ -516,6 +845,42 @@ func (lc *LineClient) ensurePeerKey(_ context.Context, mid string) (int, string,
 	return pk.raw, pk.pub, nil
 }
 
+func (lc *LineClient) ensurePeerKeyByID(_ context.Context, mid string, keyID int) (int, string, error) {
+	if lc.peerKeys == nil {
+		lc.peerKeys = make(map[string]peerKeyInfo)
+	}
+	if cached, ok := lc.peerKeys[mid]; ok && cached.raw == keyID && cached.pub != "" {
+		if lc.E2EE != nil {
+			lc.E2EE.RegisterPeerPublicKey(cached.raw, cached.pub)
+		}
+		return cached.raw, cached.pub, nil
+	}
+
+	client := line.NewClient(lc.AccessToken)
+	// keyVersion 1
+	res, err := client.GetE2EEPublicKey(mid, 1, keyID)
+	if err != nil {
+		return 0, "", err
+	}
+
+	resKeyID, err := res.KeyID.Int64()
+	if err != nil {
+		return 0, "", err
+	}
+
+	if int(resKeyID) != keyID {
+		return 0, "", fmt.Errorf("fetched key ID %d does not match requested %d", resKeyID, keyID)
+	}
+
+	pk := peerKeyInfo{raw: int(resKeyID), pub: res.PublicKey}
+	// Cache the fetched key so subsequent lookups reuse it.
+	lc.peerKeys[mid] = pk
+	if lc.E2EE != nil {
+		lc.E2EE.RegisterPeerPublicKey(pk.raw, pk.pub)
+	}
+	return pk.raw, pk.pub, nil
+}
+
 func (lc *LineClient) ensurePeerKeyForMessage(ctx context.Context, msg *line.Message) {
 	if lc.E2EE == nil || len(msg.Chunks) < 5 {
 		return
@@ -533,11 +898,13 @@ func (lc *LineClient) ensurePeerKeyForMessage(ctx context.Context, msg *line.Mes
 	if peerRaw == 0 || peerRaw == myRaw {
 		return
 	}
-	if _, ok := lc.peerKeys[msg.From]; ok {
+	if lc.E2EE.HasPeerPublicKey(peerRaw) {
 		return
 	}
-	if _, _, err := lc.ensurePeerKey(ctx, msg.From); err != nil {
-		lc.UserLogin.Bridge.Log.Warn().Err(err).Str("peer", msg.From).Msg("Failed to fetch peer key for decrypt")
+	if _, _, err := lc.ensurePeerKeyByID(ctx, msg.From, peerRaw); err != nil {
+		if _, _, err2 := lc.ensurePeerKey(ctx, msg.From); err2 != nil {
+			lc.UserLogin.Bridge.Log.Warn().Err(err).Err(err2).Str("peer", msg.From).Int("key_id", peerRaw).Msg("Failed to fetch peer key for decrypt")
+		}
 	}
 }
 
@@ -552,20 +919,47 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 
 	portalMid := string(msg.Portal.ID)
 	client := line.NewClient(lc.AccessToken)
-	myRaw, myKeyID, err := lc.E2EE.MyKeyIDs()
-	if err != nil {
-		return nil, fmt.Errorf("missing own E2EE key: %w", err)
-	}
-
-	peerRaw, peerPub, err := lc.ensurePeerKey(ctx, portalMid)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get peer key: %w", err)
-	}
-
 	fromMid := lc.midOrFallback()
-	chunks, err := lc.E2EE.EncryptMessageV2(portalMid, fromMid, myKeyID, peerPub, myRaw, peerRaw, 0, msg.Content.Body)
-	if err != nil {
-		return nil, fmt.Errorf("encrypt failed: %w", err)
+
+	var chunks []string
+	var err error
+	lowerPortalID := strings.ToLower(portalMid)
+	// groups *should* start with 'c' and rooms with 'r'
+	if strings.HasPrefix(lowerPortalID, "c") || strings.HasPrefix(lowerPortalID, "r") {
+		if errFetch := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); errFetch != nil {
+			lc.UserLogin.Bridge.Log.Debug().Err(errFetch).Str("chat_mid", portalMid).Msg("fetchAndUnwrapGroupKey before encrypt failed")
+		}
+		chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
+		if err != nil {
+			lc.UserLogin.Bridge.Log.Debug().Err(err).Str("chat_mid", portalMid).Msg("EncryptGroupMessage failed, fetching latest group key")
+			if errFetch := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); errFetch != nil {
+				err = fmt.Errorf("%w (failed to fetch latest group key: %v)", err, errFetch)
+			} else {
+				chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
+				if err != nil {
+					lc.UserLogin.Bridge.Log.Debug().Err(err).Str("chat_mid", portalMid).Msg("EncryptGroupMessage still missing key after fetch")
+				}
+			}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("group encrypt failed: %w", err)
+		}
+	} else {
+		// 1-1 Encryption
+		myRaw, myKeyID, err := lc.E2EE.MyKeyIDs()
+		if err != nil {
+			return nil, fmt.Errorf("missing own E2EE key: %w", err)
+		}
+
+		peerRaw, peerPub, err := lc.ensurePeerKey(ctx, portalMid)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get peer key: %w", err)
+		}
+
+		chunks, err = lc.E2EE.EncryptMessageV2(portalMid, fromMid, myKeyID, peerPub, myRaw, peerRaw, 0, msg.Content.Body)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt failed: %w", err)
+		}
 	}
 
 	now := time.Now().UnixMilli()

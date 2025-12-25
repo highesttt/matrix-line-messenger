@@ -305,3 +305,33 @@ func (c *Client) postWithHMAC(fullURL string, body []byte) ([]byte, error) {
 
 	return io.ReadAll(resp.Body)
 }
+
+func (c *Client) RefreshAccessToken(refreshToken string) (*TokenV3IssueResult, error) {
+	url := "https://line-chrome-gw.line-apps.com/api/auth/tokenRefresh"
+
+	reqBody := RefreshAccessTokenRequest{
+		RefreshToken: refreshToken,
+		RetryCount:   0,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal refresh request: %w", err)
+	}
+
+	respBytes, err := c.postWithHMAC(url, bodyBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	var res TokenV3IssueResult
+	if err := json.Unmarshal(respBytes, &res); err != nil {
+		return nil, fmt.Errorf("failed to parse refresh response: %w", err)
+	}
+
+	if res.AccessToken != "" {
+		c.AccessToken = res.AccessToken
+	}
+
+	return &res, nil
+}
