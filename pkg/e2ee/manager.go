@@ -31,6 +31,13 @@ type Manager struct {
 	keyByRawID    map[int]int    // raw key id -> runner key id
 	channelByPair map[string]int // privRaw/peerRaw -> channelId
 	sequence      map[string]int // portal/chat id -> seq
+
+	// groupKeys maps chatMid -> groupKeyId -> e2eeKeyId (unwrapped group private key, runner ID)
+	groupKeys map[string]map[int]int
+	// groupSessionChannels maps chatMid -> groupKeyId -> senderKeyId -> channelId (runner Channel ID)
+	groupSessionChannels map[string]map[int]map[int]int
+
+	latestGroupKey map[string]int // chatMid -> latest groupKeyId
 }
 
 func NewManager() (*Manager, error) {
@@ -39,11 +46,14 @@ func NewManager() (*Manager, error) {
 		return nil, err
 	}
 	return &Manager{
-		runner:        r,
-		peerPublic:    make(map[int]string),
-		keyByRawID:    make(map[int]int),
-		channelByPair: make(map[string]int),
-		sequence:      make(map[string]int),
+		runner:               r,
+		peerPublic:           make(map[int]string),
+		keyByRawID:           make(map[int]int),
+		channelByPair:        make(map[string]int),
+		sequence:             make(map[string]int),
+		groupKeys:            make(map[string]map[int]int),
+		groupSessionChannels: make(map[string]map[int]map[int]int),
+		latestGroupKey:       make(map[string]int),
 	}, nil
 }
 
@@ -319,6 +329,185 @@ func (m *Manager) DecryptMessageV2(msg *line.Message) (string, error) {
 		return "", err
 	}
 	return pt, nil
+}
+
+func (m *Manager) UnwrapGroupSharedKey(chatMid string, sharedKey *line.E2EEGroupSharedKey) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	creatorRawKeyID := sharedKey.CreatorKeyID
+	creatorPubKeyB64, ok := m.peerPublic[creatorRawKeyID]
+	if !ok {
+		return 0, fmt.Errorf("missing creator public key for %d", creatorRawKeyID)
+	}
+
+	receiverRawKeyID := sharedKey.ReceiverKeyID
+	myRunnerKey := 0
+	if receiverRawKeyID == m.myRawKeyID {
+		myRunnerKey = m.myKeyID
+	} else if id, ok := m.keyByRawID[receiverRawKeyID]; ok {
+		myRunnerKey = id
+	}
+
+	if myRunnerKey == 0 {
+		return 0, fmt.Errorf("missing my private key for %d", receiverRawKeyID)
+	}
+
+	chanID, err := m.runner.ChannelCreate(myRunnerKey, creatorPubKeyB64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create channel with creator: %w", err)
+	}
+
+	unwrappedKeyID, err := m.runner.ChannelUnwrapGroupSharedKey(chanID, sharedKey.EncryptedSharedKey)
+	if err != nil {
+		return 0, fmt.Errorf("failed to unwrap group key: %w", err)
+	}
+
+	if _, ok := m.groupKeys[chatMid]; !ok {
+		m.groupKeys[chatMid] = make(map[int]int)
+	}
+	m.groupKeys[chatMid][sharedKey.GroupKeyID] = unwrappedKeyID
+
+	m.latestGroupKey[chatMid] = sharedKey.GroupKeyID
+
+	return unwrappedKeyID, nil
+}
+
+func (m *Manager) DecryptGroupMessage(msg *line.Message, chatMid string) (string, int, error) {
+	// Group chunks: [..., groupKeyID(4), ???]
+	// JS: vF365(t, n, r); n=myKeyID, r=groupKeyID.
+	// chunks = [first, body, tag, senderKeyID, groupKeyID]
+	if len(msg.Chunks) < 5 {
+		return "", 0, fmt.Errorf("not enough chunks")
+	}
+
+	senderKeyID, err := DecodeKeyID(msg.Chunks[len(msg.Chunks)-2])
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to decode sender key id: %w", err)
+	}
+
+	groupKeyID, err := DecodeKeyID(msg.Chunks[len(msg.Chunks)-1])
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to decode group key id: %w", err)
+	}
+
+	m.mu.Lock()
+	keyMap, ok := m.groupKeys[chatMid]
+	var unwrappedKeyID int
+	if ok {
+		unwrappedKeyID = keyMap[groupKeyID]
+	}
+	m.mu.Unlock()
+
+	if unwrappedKeyID == 0 {
+		return "", groupKeyID, fmt.Errorf("group key %d not found", groupKeyID)
+	}
+
+	chanID, err := m.ensureGroupChannel(chatMid, groupKeyID, unwrappedKeyID, senderKeyID)
+	if err != nil {
+		return "", groupKeyID, err
+	}
+
+	cipher, err := assembleCipher(msg.Chunks)
+	if err != nil {
+		return "", groupKeyID, err
+	}
+
+	pt, _, err := m.runner.ChannelDecryptV2(chanID, msg.To, msg.From, senderKeyID, groupKeyID, msg.ContentType, base64.StdEncoding.EncodeToString(cipher))
+	if err != nil {
+		return "", groupKeyID, err
+	}
+
+	return pt, groupKeyID, nil
+}
+
+func (m *Manager) ensureGroupChannel(chatMid string, groupKeyID, unwrappedKeyID, senderKeyID int) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.groupSessionChannels[chatMid] == nil {
+		m.groupSessionChannels[chatMid] = make(map[int]map[int]int)
+	}
+	if m.groupSessionChannels[chatMid][groupKeyID] == nil {
+		m.groupSessionChannels[chatMid][groupKeyID] = make(map[int]int)
+	}
+	if id, ok := m.groupSessionChannels[chatMid][groupKeyID][senderKeyID]; ok {
+		return id, nil
+	}
+
+	senderPubB64, ok := m.peerPublic[senderKeyID]
+	if !ok {
+		return 0, fmt.Errorf("missing public key for sender %d", senderKeyID)
+	}
+
+	chanID, err := m.runner.ChannelCreate(unwrappedKeyID, senderPubB64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create group channel: %w", err)
+	}
+
+	m.groupSessionChannels[chatMid][groupKeyID][senderKeyID] = chanID
+	return chanID, nil
+}
+
+func (m *Manager) EncryptGroupMessage(chatMid, fromMid string, plaintext string) ([]string, error) {
+	m.mu.Lock()
+	groupKeyID, ok := m.latestGroupKey[chatMid]
+	var unwrappedKeyID int
+	if ok {
+		unwrappedKeyID = m.groupKeys[chatMid][groupKeyID]
+	}
+	myKeyID := m.myRawKeyID
+	seq := m.sequence[chatMid] + 1
+	m.sequence[chatMid] = seq
+	m.mu.Unlock()
+
+	if !ok || unwrappedKeyID == 0 {
+		return nil, fmt.Errorf("no group key found for %s", chatMid)
+	}
+
+	chanID, err := m.ensureGroupChannel(chatMid, groupKeyID, unwrappedKeyID, myKeyID)
+	if err != nil {
+		return nil, err
+	}
+
+	payload, err := json.Marshal(map[string]string{"text": plaintext})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	ctB64, err := m.runner.ChannelEncryptV2(chanID, chatMid, fromMid, myKeyID, groupKeyID, 0, seq, string(payload))
+	if err != nil {
+		return nil, err
+	}
+	ctBytes, err := base64.StdEncoding.DecodeString(ctB64)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(ctBytes) < 28 {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+
+	first := ctBytes[:16]
+	tag := ctBytes[16:28]
+	body := ctBytes[28:]
+
+	senderBuf := make([]byte, 4)
+	receiverBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(senderBuf, uint32(myKeyID))      // Sender is my Key ID
+	binary.BigEndian.PutUint32(receiverBuf, uint32(groupKeyID)) // Receiver is Group Key ID
+
+	toB64 := func(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
+	// [first, body, tag, senderKeyID, groupKeyID]
+	chunks := []string{toB64(first), toB64(body), toB64(tag), toB64(senderBuf), toB64(receiverBuf)}
+	return chunks, nil
+}
+
+func (m *Manager) HasPeerPublicKey(rawKeyID int) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.peerPublic[rawKeyID]
+	return ok
 }
 
 func (m *Manager) RegisterPeerPublicKey(rawKeyID int, pubB64 string) {

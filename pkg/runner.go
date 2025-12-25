@@ -357,6 +357,23 @@ func (r *Runner) ChannelCreate(keyID int, peerPublicB64 string) (int, error) {
 	return chanID, nil
 }
 
+// unwraps the group shared key using the channel
+func (r *Runner) ChannelUnwrapGroupSharedKey(channelID int, encryptedSharedKeyB64 string) (int, error) {
+	resp, err := r.call(map[string]any{
+		"type":               "channel_unwrap_group_shared_key",
+		"channelId":          channelID,
+		"encryptedSharedKey": encryptedSharedKeyB64,
+	})
+	if err != nil {
+		return 0, err
+	}
+	var keyID int
+	if v, ok := resp["keyId"]; ok {
+		_ = json.Unmarshal(v, &keyID)
+	}
+	return keyID, nil
+}
+
 type UnwrappedKey struct {
 	KeyID    int    `json:"keyId"`
 	Exported string `json:"exported"`

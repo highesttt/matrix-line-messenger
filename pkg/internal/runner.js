@@ -364,6 +364,12 @@ async function run() {
 					const chan = k.createChannel(b64ToU8(peerPublicKey));
 					const chanId = putChannel(chan);
 					process.stdout.write(JSON.stringify({ channelId: chanId }) + "\n");
+				} else if (type === "channel_unwrap_group_shared_key") {
+					const { channelId, encryptedSharedKey } = query;
+					const chan = getChannel(toIntStrict("channelId", channelId));
+					const unwrappedKey = chan.unwrapGroupSharedKey(b64ToU8(encryptedSharedKey));
+					const keyId = putKey(unwrappedKey);
+					process.stdout.write(JSON.stringify({ keyId }) + "\n");
 				} else if (type === "channel_encrypt_v2") {
 					const {
 						channelId,
