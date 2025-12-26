@@ -17,8 +17,10 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
+	github.com/aws/aws-sdk-go v1.38.20 // indirect
 	github.com/coder/websocket v1.8.14 // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/lib/pq v1.10.9 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -30,6 +32,8 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
+	github.com/u2takey/ffmpeg-go v0.5.0 // indirect
+	github.com/u2takey/go-utils v0.3.1 // indirect
 	github.com/yuin/goldmark v1.7.13 // indirect
 	go.mau.fi/zeroconfig v0.2.0 // indirect
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6 // indirect

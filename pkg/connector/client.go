@@ -17,11 +17,13 @@ import (
 	_ "image/png"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	ffmpeg "github.com/u2takey/ffmpeg-go"
 	"go.mau.fi/util/ptr"
 	"golang.org/x/crypto/hkdf"
 	"golang.org/x/image/draw"
@@ -175,6 +177,48 @@ func (lc *LineClient) encryptImageData(plainData []byte) ([]byte, string, error)
 	return result, keyMaterialB64, nil
 }
 
+// encryptVideoData encrypts video data with HMAC computed on chunk hashes
+func (lc *LineClient) encryptVideoData(plainData []byte) ([]byte, string, error) {
+	keyMaterial := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, keyMaterial); err != nil {
+		return nil, "", fmt.Errorf("failed to generate key material: %w", err)
+	}
+
+	kdf := hkdf.New(sha256.New, keyMaterial, nil, []byte("FileEncryption"))
+	derived := make([]byte, 76)
+	if _, err := io.ReadFull(kdf, derived); err != nil {
+		return nil, "", fmt.Errorf("failed to derive keys: %w", err)
+	}
+
+	encKey := derived[0:32]
+	macKey := derived[32:64]
+	nonce := derived[64:76]
+
+	counter := make([]byte, 16)
+	copy(counter, nonce)
+
+	block, err := aes.NewCipher(encKey)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create AES cipher: %w", err)
+	}
+
+	stream := cipher.NewCTR(block, counter)
+
+	encrypted := make([]byte, len(plainData))
+	stream.XORKeyStream(encrypted, plainData)
+
+	// For videos: compute HMAC on chunk hashes
+	chunkHashes := generateChunkHashes(encrypted)
+	h := hmac.New(sha256.New, macKey)
+	h.Write(chunkHashes)
+	hmacSum := h.Sum(nil)
+
+	result := append(encrypted, hmacSum...)
+	keyMaterialB64 := base64.StdEncoding.EncodeToString(keyMaterial)
+
+	return result, keyMaterialB64, nil
+}
+
 func generateThumbnail(imageData []byte) ([]byte, int, int, error) {
 	img, _, err := image.Decode(bytes.NewReader(imageData))
 	if err != nil {
@@ -237,6 +281,75 @@ func isAnimatedGif(data []byte) bool {
 	}
 
 	return false
+}
+
+// generates the first frame of a video and resizes it to fit within 384x384
+func extractVideoThumbnail(videoData []byte) ([]byte, int, int, error) {
+	tmpVideoFile, err := os.CreateTemp("", "video-*.mp4")
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("failed to create temp video file: %w", err)
+	}
+	defer os.Remove(tmpVideoFile.Name())
+	defer tmpVideoFile.Close()
+
+	if _, err := tmpVideoFile.Write(videoData); err != nil {
+		return nil, 0, 0, fmt.Errorf("failed to write video data: %w", err)
+	}
+	tmpVideoFile.Close()
+
+	tmpThumbFile, err := os.CreateTemp("", "thumb-*.jpg")
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("failed to create temp thumb file: %w", err)
+	}
+	defer os.Remove(tmpThumbFile.Name())
+	tmpThumbFile.Close()
+
+	err = ffmpeg.Input(tmpVideoFile.Name()).
+		Filter("scale", ffmpeg.Args{fmt.Sprintf("384:384:force_original_aspect_ratio=decrease")}).
+		Output(tmpThumbFile.Name(), ffmpeg.KwArgs{
+			"vframes": 1,
+			"q:v":     5,
+		}).
+		OverWriteOutput().
+		Silent(true).
+		Run()
+
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("ffmpeg failed: %w", err)
+	}
+
+	thumbData, err := os.ReadFile(tmpThumbFile.Name())
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("failed to read thumbnail: %w", err)
+	}
+
+	img, _, err := image.Decode(bytes.NewReader(thumbData))
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("failed to decode thumbnail: %w", err)
+	}
+
+	bounds := img.Bounds()
+	return thumbData, bounds.Dx(), bounds.Dy(), nil
+}
+
+// generateChunkHashes generates SHA-256 hashes for 128KB chunks of encrypted video data
+// This is required by LINE for video integrity verification
+func generateChunkHashes(encryptedData []byte) []byte {
+	const chunkSize = 131072 // 128KB chunks
+	var allHashes []byte
+
+	for i := 0; i < len(encryptedData); i += chunkSize {
+		end := i + chunkSize
+		if end > len(encryptedData) {
+			end = len(encryptedData)
+		}
+
+		chunk := encryptedData[i:end]
+		hash := sha256.Sum256(chunk)
+		allHashes = append(allHashes, hash[:]...)
+	}
+
+	return allHashes
 }
 
 func min(a, b int) int {
@@ -827,6 +940,152 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 									Body:    "image.jpg",
 									URL:     mxc,
 									File:    file,
+								},
+							},
+						},
+					}, nil
+				}
+			}
+
+			if data.ContentType == 2 { // Video
+				oid := data.ContentMetadata["OID"]
+
+				if oid == "" && decryptedBody != "" && strings.Contains(decryptedBody, "OID") {
+					var decryptInfo struct {
+						OID         string `json:"OID"`
+						KeyMaterial string `json:"keyMaterial"`
+						FileName    string `json:"fileName"`
+					}
+					if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err == nil && decryptInfo.OID != "" {
+						oid = decryptInfo.OID
+					}
+				}
+
+				if oid != "" {
+					client := line.NewClient(lc.AccessToken)
+					videoData, err := client.DownloadOBSWithSID(oid, data.ID, "emv")
+
+					if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err)) {
+						if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+							client = line.NewClient(lc.AccessToken)
+							videoData, err = client.DownloadOBSWithSID(oid, data.ID, "emv")
+						} else {
+							lc.UserLogin.Bridge.Log.Warn().Err(errRefresh).Msg("Failed to refresh token for OBS download")
+						}
+					}
+
+					if err != nil {
+						lc.UserLogin.Bridge.Log.Error().
+							Err(err).
+							Str("oid", oid).
+							Str("msg_id", data.ID).
+							Msg("Failed to download video from OBS")
+						return nil, fmt.Errorf("failed to download video from OBS: %w", err)
+					}
+
+					if decryptedBody != "" && strings.Contains(decryptedBody, "keyMaterial") {
+						var decryptInfo struct {
+							KeyMaterial string `json:"keyMaterial"`
+							FileName    string `json:"fileName"`
+						}
+						if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err == nil && decryptInfo.KeyMaterial != "" {
+							lc.UserLogin.Bridge.Log.Debug().
+								Str("key_material_len", fmt.Sprintf("%d", len(decryptInfo.KeyMaterial))).
+								Str("file_name", decryptInfo.FileName).
+								Msg("Decrypting E2EE video")
+
+							decryptedVideo, err := lc.decryptImageData(videoData, decryptInfo.KeyMaterial)
+							if err != nil {
+								lc.UserLogin.Bridge.Log.Error().
+									Err(err).
+									Msg("Failed to decrypt video data")
+								return nil, fmt.Errorf("failed to decrypt video data: %w", err)
+							}
+							videoData = decryptedVideo
+							lc.UserLogin.Bridge.Log.Info().
+								Int("decrypted_size", len(videoData)).
+								Msg("Successfully decrypted video")
+						}
+					}
+
+					if encKM := data.ContentMetadata["ENC_KM"]; encKM != "" && len(videoData) > 32 {
+						lc.UserLogin.Bridge.Log.Debug().
+							Str("enc_km_preview", encKM[:min(20, len(encKM))]+"...").
+							Msg("Decrypting video using ENC_KM from metadata")
+
+						decryptedVideo, err := lc.decryptImageData(videoData, encKM)
+						if err != nil {
+							lc.UserLogin.Bridge.Log.Error().
+								Err(err).
+								Msg("Failed to decrypt video data from ENC_KM")
+							return nil, fmt.Errorf("failed to decrypt video data: %w", err)
+						}
+						videoData = decryptedVideo
+						lc.UserLogin.Bridge.Log.Info().
+							Int("decrypted_size", len(videoData)).
+							Msg("Successfully decrypted video from ENC_KM")
+					}
+
+					fileName := data.ContentMetadata["FILE_NAME"]
+
+					if fileName == "" && decryptedBody != "" && strings.Contains(decryptedBody, "fileName") {
+						var decryptInfo struct {
+							FileName string `json:"fileName"`
+						}
+						if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err == nil && decryptInfo.FileName != "" {
+							fileName = decryptInfo.FileName
+						}
+					}
+
+					if fileName == "" {
+						fileName = "video.mp4"
+					}
+
+					mimeType := "video/mp4"
+					if strings.HasSuffix(strings.ToLower(fileName), ".webm") {
+						mimeType = "video/webm"
+					}
+
+					mxc, file, err := intent.UploadMedia(ctx, portal.MXID, videoData, fileName, mimeType)
+					if err != nil {
+						lc.UserLogin.Bridge.Log.Error().
+							Err(err).
+							Int("size_bytes", len(videoData)).
+							Msg("Failed to upload video to Matrix")
+						return nil, fmt.Errorf("failed to upload video to matrix: %w", err)
+					}
+
+					lc.UserLogin.Bridge.Log.Info().
+						Str("mxc", mxc.ParseOrIgnore().String()).
+						Str("file_name", fileName).
+						Int("size", len(videoData)).
+						Msg("Successfully uploaded video to Matrix")
+
+					var duration int
+					if durationStr := data.ContentMetadata["DURATION"]; durationStr != "" {
+						if d, err := strconv.Atoi(durationStr); err == nil {
+							duration = d
+						}
+					}
+
+					videoInfo := &event.FileInfo{
+						MimeType: mimeType,
+						Size:     len(videoData),
+					}
+					if duration > 0 {
+						videoInfo.Duration = duration
+					}
+
+					return &bridgev2.ConvertedMessage{
+						Parts: []*bridgev2.ConvertedMessagePart{
+							{
+								Type: event.EventMessage,
+								Content: &event.MessageEventContent{
+									MsgType: event.MsgVideo,
+									Body:    fileName,
+									URL:     mxc,
+									File:    file,
+									Info:    videoInfo,
 								},
 							},
 						},
@@ -1436,6 +1695,111 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		} else {
 			return nil, fmt.Errorf("file type %s not implemented yet", mimeType)
 		}
+
+	case event.MsgVideo:
+		data, err := lc.UserLogin.Bridge.Bot.DownloadMedia(ctx, msg.Content.URL, msg.Content.File)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download video from matrix: %w", err)
+		}
+
+		encryptedData, keyMaterialB64, err := lc.encryptVideoData(data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt video data: %w", err)
+		}
+
+		oid, err := client.UploadOBSWithSID(encryptedData, "emv")
+		if err != nil {
+			return nil, fmt.Errorf("failed to upload encrypted video to OBS: %w", err)
+		}
+
+		chunkHashes := generateChunkHashes(encryptedData[:len(encryptedData)-32]) // Exclude HMAC
+		if len(chunkHashes) > 0 {
+			hashOID := fmt.Sprintf("%s__ud-hash", oid)
+			if err := client.UploadOBSWithOIDAndSID(chunkHashes, hashOID, "emv"); err != nil {
+				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload video hash, continuing without it")
+			} else {
+				lc.UserLogin.Bridge.Log.Info().
+					Str("hash_oid", hashOID).
+					Int("hash_size", len(chunkHashes)).
+					Msg("Uploaded video chunk hashes")
+			}
+		}
+
+		thumbnailData, thumbWidth, thumbHeight, err := extractVideoThumbnail(data)
+		if err != nil {
+			lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to extract video thumbnail, using placeholder")
+			thumbWidth = 384
+			thumbHeight = 384
+			placeholderImg := image.NewRGBA(image.Rect(0, 0, thumbWidth, thumbHeight))
+			var thumbBuf bytes.Buffer
+			jpeg.Encode(&thumbBuf, placeholderImg, &jpeg.Options{Quality: 30})
+			thumbnailData = thumbBuf.Bytes()
+		}
+
+		if len(thumbnailData) > 0 {
+			keyMaterial, _ := base64.StdEncoding.DecodeString(keyMaterialB64)
+			kdf := hkdf.New(sha256.New, keyMaterial, nil, []byte("FileEncryption"))
+			derived := make([]byte, 76)
+			io.ReadFull(kdf, derived)
+
+			encKey := derived[0:32]
+			macKey := derived[32:64]
+			nonce := derived[64:76]
+
+			counter := make([]byte, 16)
+			copy(counter, nonce)
+
+			block, _ := aes.NewCipher(encKey)
+			stream := cipher.NewCTR(block, counter)
+
+			encryptedThumb := make([]byte, len(thumbnailData))
+			stream.XORKeyStream(encryptedThumb, thumbnailData)
+
+			h := hmac.New(sha256.New, macKey)
+			h.Write(encryptedThumb)
+			encryptedThumbWithHMAC := append(encryptedThumb, h.Sum(nil)...)
+
+			previewOID := fmt.Sprintf("%s__ud-preview", oid)
+			if err := client.UploadOBSWithOIDAndSID(encryptedThumbWithHMAC, previewOID, "emv"); err != nil {
+				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload video preview, continuing without it")
+			} else {
+				mediaThumbInfo := map[string]interface{}{
+					"width":  thumbWidth,
+					"height": thumbHeight,
+				}
+				if thumbInfoJSON, err := json.Marshal(mediaThumbInfo); err == nil {
+					contentMetadata["MEDIA_THUMB_INFO"] = string(thumbInfoJSON)
+				}
+
+				lc.UserLogin.Bridge.Log.Info().
+					Str("preview_oid", previewOID).
+					Int("preview_size", len(encryptedThumbWithHMAC)).
+					Int("thumb_width", thumbWidth).
+					Int("thumb_height", thumbHeight).
+					Msg("Uploaded video preview placeholder")
+			}
+		}
+
+		contentType = 2 // Video
+		contentMetadata["OID"] = oid
+		contentMetadata["SID"] = "emv"                              // Video SID
+		contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(data)) // Original unencrypted size
+		contentMetadata["contentType"] = "2"
+		contentMetadata["ENC_KM"] = keyMaterialB64 // Required for OBS access
+
+		// Add duration if available (in milliseconds)
+		if msg.Content.Info.Duration > 0 {
+			contentMetadata["DURATION"] = fmt.Sprintf("%d", msg.Content.Info.Duration)
+		}
+
+		//Empty payload like images
+		payload = []byte("{}")
+
+		lc.UserLogin.Bridge.Log.Info().
+			Str("oid", oid).
+			Str("enc_km", keyMaterialB64[:20]+"...").
+			Int("encrypted_size", len(encryptedData)).
+			Msg("Prepared E2EE video message")
 
 	default:
 		return nil, fmt.Errorf("message type %s not implemented", msg.Content.MsgType)
