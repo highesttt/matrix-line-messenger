@@ -21,5 +21,5 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 - [ ] Reply support
 - [ ] Prefetch chats
 - [x] Group chats
-- [ ] Media messages (images, videos, voice notes, files)
+- [x] Media messages (images, videos, voice notes, files)
 - [ ] Sticker support
