@@ -133,7 +133,7 @@ func (lc *LineClient) decryptImageData(encryptedData []byte, keyMaterialB64 stri
 }
 
 // AES-256-CTR
-func (lc *LineClient) encryptImageData(plainData []byte) ([]byte, string, error) {
+func (lc *LineClient) encryptFileData(plainData []byte) ([]byte, string, error) {
 	keyMaterial := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, keyMaterial); err != nil {
 		return nil, "", fmt.Errorf("failed to generate key material: %w", err)
@@ -1093,6 +1093,114 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 				}
 			}
 
+			// Handle File type (14)
+			if data.ContentType == 14 {
+				oid := data.ContentMetadata["OID"]
+				if oid == "" && decryptedBody != "" && strings.Contains(decryptedBody, "fileName") {
+					lc.UserLogin.Bridge.Log.Debug().Msg("File message with encrypted payload, OID in metadata")
+				}
+
+				if oid != "" {
+					client := line.NewClient(lc.AccessToken)
+					fileData, err := client.DownloadOBSWithSID(oid, data.ID, "emf")
+					if err != nil {
+						lc.UserLogin.Bridge.Log.Error().
+							Err(err).
+							Str("oid", oid).
+							Msg("Failed to download file from OBS")
+						return nil, fmt.Errorf("failed to download file from OBS: %w", err)
+					}
+
+					// Try to decrypt using keyMaterial from encrypted payload
+					var fileName string
+					if decryptedBody != "" && strings.Contains(decryptedBody, "keyMaterial") {
+						var decryptInfo struct {
+							KeyMaterial string `json:"keyMaterial"`
+							FileName    string `json:"fileName"`
+						}
+						if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err != nil {
+							lc.UserLogin.Bridge.Log.Error().
+								Err(err).
+								Msg("Failed to parse file payload JSON")
+							return nil, fmt.Errorf("failed to parse file payload: %w", err)
+						}
+
+						if decryptInfo.KeyMaterial != "" {
+							keyPreview := decryptInfo.KeyMaterial
+							if len(keyPreview) > 20 {
+								keyPreview = keyPreview[:20] + "..."
+							}
+							lc.UserLogin.Bridge.Log.Debug().
+								Str("key_material_preview", keyPreview).
+								Msg("Decrypting file using keyMaterial from payload")
+
+							decryptedFile, err := lc.decryptImageData(fileData, decryptInfo.KeyMaterial)
+							if err != nil {
+								lc.UserLogin.Bridge.Log.Error().
+									Err(err).
+									Msg("Failed to decrypt file data")
+								return nil, fmt.Errorf("failed to decrypt file data: %w", err)
+							}
+							fileData = decryptedFile
+							lc.UserLogin.Bridge.Log.Info().
+								Int("decrypted_size", len(fileData)).
+								Msg("Successfully decrypted file")
+						}
+
+						if decryptInfo.FileName != "" {
+							fileName = decryptInfo.FileName
+						}
+					}
+
+					if fileName == "" {
+						fileName = data.ContentMetadata["FILE_NAME"]
+					}
+
+					if fileName == "" {
+						fileName = "file.bin"
+					}
+
+					// Detect MIME type from file extension
+					mimeType := "application/octet-stream"
+					if strings.HasSuffix(strings.ToLower(fileName), ".pdf") {
+						mimeType = "application/pdf"
+					}
+
+					mxc, file, err := intent.UploadMedia(ctx, portal.MXID, fileData, fileName, mimeType)
+					if err != nil {
+						lc.UserLogin.Bridge.Log.Error().
+							Err(err).
+							Int("size_bytes", len(fileData)).
+							Msg("Failed to upload file to Matrix")
+						return nil, fmt.Errorf("failed to upload file to matrix: %w", err)
+					}
+
+					lc.UserLogin.Bridge.Log.Info().
+						Str("mxc", mxc.ParseOrIgnore().String()).
+						Str("file_name", fileName).
+						Int("size", len(fileData)).
+						Msg("Successfully uploaded file to Matrix")
+
+					return &bridgev2.ConvertedMessage{
+						Parts: []*bridgev2.ConvertedMessagePart{
+							{
+								Type: event.EventMessage,
+								Content: &event.MessageEventContent{
+									MsgType: event.MsgFile,
+									Body:    fileName,
+									URL:     mxc,
+									File:    file,
+									Info: &event.FileInfo{
+										MimeType: mimeType,
+										Size:     len(fileData),
+									},
+								},
+							},
+						},
+					}, nil
+				}
+			}
+
 			// Default to Text
 			return &bridgev2.ConvertedMessage{
 				Parts: []*bridgev2.ConvertedMessagePart{
@@ -1492,7 +1600,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			extension = "png"
 		}
 
-		encryptedData, keyMaterialB64, err := lc.encryptImageData(data)
+		encryptedData, keyMaterialB64, err := lc.encryptFileData(data)
 		if err != nil {
 			return nil, fmt.Errorf("failed to encrypt image data: %w", err)
 		}
@@ -1592,109 +1700,51 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		payload = []byte("{}")
 
 	case event.MsgFile:
-		mimeType := msg.Content.Info.MimeType
-		if strings.HasPrefix(mimeType, "image/") {
-			data, err := lc.UserLogin.Bridge.Bot.DownloadMedia(ctx, msg.Content.URL, msg.Content.File)
-			if err != nil {
-				return nil, fmt.Errorf("failed to download media from matrix: %w", err)
-			}
-
-			isGif := mimeType == "image/gif"
-			isAnimated := isGif && isAnimatedGif(data)
-
-			extension := "jpg"
-			if isGif {
-				extension = "gif"
-			} else if mimeType == "image/png" {
-				extension = "png"
-			}
-
-			encryptedData, keyMaterialB64, err := lc.encryptImageData(data)
-			if err != nil {
-				return nil, fmt.Errorf("failed to encrypt image data: %w", err)
-			}
-
-			oid, err := client.UploadOBS(encryptedData)
-			if err != nil {
-				return nil, fmt.Errorf("failed to upload encrypted image to OBS: %w", err)
-			}
-
-			thumbnailData, thumbWidth, thumbHeight, err := generateThumbnail(data)
-			if err != nil {
-				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to generate thumbnail, continuing without it")
-			} else {
-				keyMaterial, _ := base64.StdEncoding.DecodeString(keyMaterialB64)
-
-				kdf := hkdf.New(sha256.New, keyMaterial, nil, []byte("FileEncryption"))
-				derived := make([]byte, 76)
-				io.ReadFull(kdf, derived)
-
-				encKey := derived[0:32]
-				macKey := derived[32:64]
-				nonce := derived[64:76]
-
-				counter := make([]byte, 16)
-				copy(counter, nonce)
-
-				block, _ := aes.NewCipher(encKey)
-				stream := cipher.NewCTR(block, counter)
-
-				encryptedThumb := make([]byte, len(thumbnailData))
-				stream.XORKeyStream(encryptedThumb, thumbnailData)
-
-				h := hmac.New(sha256.New, macKey)
-				h.Write(encryptedThumb)
-				encryptedThumbWithHMAC := append(encryptedThumb, h.Sum(nil)...)
-
-				previewOID := fmt.Sprintf("%s__ud-preview", oid)
-				if err := client.UploadOBSWithOID(encryptedThumbWithHMAC, previewOID); err != nil {
-					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload preview, continuing without it")
-				} else {
-					mediaThumbInfo := map[string]interface{}{
-						"width":  thumbWidth,
-						"height": thumbHeight,
-					}
-					if thumbInfoJSON, err := json.Marshal(mediaThumbInfo); err == nil {
-						contentMetadata["MEDIA_THUMB_INFO"] = string(thumbInfoJSON)
-					}
-				}
-			}
-
-			contentType = 1
-			contentMetadata["OID"] = oid
-			contentMetadata["SID"] = "emi"
-			contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(encryptedData))
-			contentMetadata["contentType"] = "1"
-			contentMetadata["ENC_KM"] = keyMaterialB64
-
-			fileName := msg.Content.Body
-			if fileName == "" {
-				if isGif {
-					fileName = "animation.gif"
-				} else {
-					fileName = "image.jpg"
-				}
-			}
-			contentMetadata["FILE_NAME"] = fileName
-
-			mediaContentInfo := map[string]interface{}{
-				"category":  "original",
-				"fileSize":  len(encryptedData),
-				"extension": extension,
-			}
-
-			if isAnimated {
-				mediaContentInfo["animated"] = true
-			}
-
-			if mediaInfoJSON, err := json.Marshal(mediaContentInfo); err == nil {
-				contentMetadata["MEDIA_CONTENT_INFO"] = string(mediaInfoJSON)
-			}
-
-			payload = []byte("{}")
-		} else {
-			return nil, fmt.Errorf("file type %s not implemented yet", mimeType)
+		// Generic files
+		data, err := lc.UserLogin.Bridge.Bot.DownloadMedia(ctx, msg.Content.URL, msg.Content.File)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download file from matrix: %w", err)
 		}
+
+		// Encrypt the file data
+		encryptedData, keyMaterialB64, err := lc.encryptFileData(data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt file data: %w", err)
+		}
+
+		// Upload encrypted file to LINE OBS with emf SID
+		oid, err := client.UploadOBSWithSID(encryptedData, "emf")
+		if err != nil {
+			return nil, fmt.Errorf("failed to upload encrypted file to OBS: %w", err)
+		}
+
+		// Prepare Metadata
+		contentType = 14 // File
+		contentMetadata["OID"] = oid
+		contentMetadata["SID"] = "emf"                              // File SID
+		contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(data)) // Original unencrypted size
+		contentMetadata["contentType"] = "14"
+
+		fileName := msg.Content.Body
+		if fileName == "" {
+			fileName = "file.bin"
+		}
+		contentMetadata["FILE_NAME"] = fileName
+
+		// For files, encryption key and filename go in the E2EE encrypted payload
+		filePayload := map[string]string{
+			"keyMaterial": keyMaterialB64,
+			"fileName":    fileName,
+		}
+		payloadBytes, _ := json.Marshal(filePayload)
+		payload = payloadBytes
+
+		lc.UserLogin.Bridge.Log.Info().
+			Str("oid", oid).
+			Str("file_name", fileName).
+			Int("encrypted_size", len(encryptedData)).
+			Int("original_size", len(data)).
+			Msg("Prepared E2EE file message")
 
 	case event.MsgVideo:
 		data, err := lc.UserLogin.Bridge.Bot.DownloadMedia(ctx, msg.Content.URL, msg.Content.File)
