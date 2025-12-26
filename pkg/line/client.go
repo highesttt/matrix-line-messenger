@@ -2,6 +2,9 @@ package line
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -334,4 +337,189 @@ func (c *Client) RefreshAccessToken(refreshToken string) (*TokenV3IssueResult, e
 	}
 
 	return &res, nil
+}
+
+const OBSBaseURL = "https://obs.line-apps.com"
+
+// UploadOBS uploads media to LINE's Object Storage and returns the Object ID (OID).
+// As per logs, we post to /r/talk/emi/reqid-<uuid>
+func (c *Client) UploadOBS(data []byte) (string, error) {
+	// First, acquire the OBS-specific encrypted access token
+	obsToken, err := c.AcquireEncryptedAccessToken()
+	if err != nil {
+		return "", fmt.Errorf("failed to acquire OBS token: %w", err)
+	}
+
+	// Generate a random Request ID (UUID-like)
+	reqIDBytes := make([]byte, 16)
+	if _, err := rand.Read(reqIDBytes); err != nil {
+		return "", fmt.Errorf("failed to generate reqID: %w", err)
+	}
+	reqID := fmt.Sprintf("%x-%x-%x-%x-%x", reqIDBytes[0:4], reqIDBytes[4:6], reqIDBytes[6:8], reqIDBytes[8:10], reqIDBytes[10:])
+
+	url := fmt.Sprintf("%s/r/talk/emi/reqid-%s", OBSBaseURL, reqID)
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
+	if err != nil {
+		return "", fmt.Errorf("failed to create OBS request: %w", err)
+	}
+
+	// Construct X-Obs-Params header (base64 encoded JSON)
+	obsParams := map[string]string{
+		"ver":  "2.0",
+		"name": fmt.Sprintf("%d", time.Now().UnixMilli()),
+		"type": "file",
+	}
+	obsParamsJSON, _ := json.Marshal(obsParams)
+	obsParamsB64 := base64.StdEncoding.EncodeToString(obsParamsJSON)
+
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("x-line-application", "CHROMEOS\t3.7.1\tChrome_OS\t1")
+	req.Header.Set("x-lal", "en_US")
+	// OBS expects application/octet-stream for binary uploads
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Obs-Params", obsParamsB64)
+
+	// Use the OBS-specific access token
+	req.Header.Set("x-line-access", obsToken)
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("OBS upload request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		return "", fmt.Errorf("OBS upload failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	// The OID is typically returned in the x-obs-oid header
+	oid := resp.Header.Get("x-obs-oid")
+	if oid == "" {
+		// Fallback: checks if reqID is used as OID or if body contains it (rare for this endpoint)
+		return "", fmt.Errorf("OBS upload succeeded but no x-obs-oid header returned")
+	}
+
+	return oid, nil
+}
+
+// UploadOBSWithOID uploads data to a specific OID (used for preview/thumbnail uploads)
+func (c *Client) UploadOBSWithOID(data []byte, oid string) error {
+	// First, acquire the OBS-specific encrypted access token
+	obsToken, err := c.AcquireEncryptedAccessToken()
+	if err != nil {
+		return fmt.Errorf("failed to acquire OBS token: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/r/talk/emi/%s", OBSBaseURL, oid)
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("failed to create OBS request: %w", err)
+	}
+
+	// Construct X-Obs-Params header (base64 encoded JSON)
+	obsParams := map[string]string{
+		"ver":  "2.0",
+		"name": fmt.Sprintf("%d", time.Now().UnixMilli()),
+		"type": "file",
+	}
+	obsParamsJSON, _ := json.Marshal(obsParams)
+	obsParamsB64 := base64.StdEncoding.EncodeToString(obsParamsJSON)
+
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("x-line-application", "CHROMEOS\t3.7.1\tChrome_OS\t1")
+	req.Header.Set("x-lal", "en_US")
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Obs-Params", obsParamsB64)
+	req.Header.Set("x-line-access", obsToken)
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("OBS upload request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		return fmt.Errorf("OBS upload failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// DownloadOBS retrieves media from LINE's Object Storage using the OID.
+func (c *Client) DownloadOBS(oid string, messageID string) ([]byte, error) {
+	// URL structure from logs: https://obs.line-apps.com/r/talk/emi/{OID}
+	url := fmt.Sprintf("%s/r/talk/emi/%s", OBSBaseURL, oid)
+
+	obsToken, err := c.AcquireEncryptedAccessToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire encrypted access token: %w", err)
+	}
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create OBS download request: %w", err)
+	}
+
+	req.Header.Set("User-Agent", UserAgent)
+	if obsToken != "" {
+		req.Header.Set("x-line-access", obsToken)
+	}
+
+	// Add x-talk-meta header with Thrift-encoded message
+	if messageID != "" {
+		talkMeta := c.constructTalkMeta(messageID)
+		req.Header.Set("x-talk-meta", talkMeta)
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("OBS download request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("OBS download failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read OBS response body: %w", err)
+	}
+
+	return data, nil
+}
+
+// this builds x-talk-meta
+// base64(json({"message": base64(thrift_message)}))
+func (c *Client) constructTalkMeta(messageID string) string {
+	// [field_type][field_id_16bit][string_length_32bit][string_bytes]...[stop_byte]
+	var buf bytes.Buffer
+
+	// Field 4 (id) - STRING type (0x0B)
+	buf.WriteByte(0x0B)                                          // TType.STRING
+	binary.Write(&buf, binary.BigEndian, uint16(4))              // field ID = 4
+	binary.Write(&buf, binary.BigEndian, uint32(len(messageID))) // string length
+	buf.WriteString(messageID)                                   // message ID
+
+	// required to send a valid struct
+	buf.WriteByte(0x0F)                              // TType.LIST
+	binary.Write(&buf, binary.BigEndian, uint16(27)) // field ID = 27
+	buf.WriteByte(0x0C)                              // element type = STRUCT
+	binary.Write(&buf, binary.BigEndian, uint32(0))  // list size = 0
+
+	buf.WriteByte(0x00)
+
+	thriftB64 := base64.StdEncoding.EncodeToString(buf.Bytes())
+
+	metaJSON := map[string]string{"message": thriftB64}
+	metaBytes, _ := json.Marshal(metaJSON)
+
+	return base64.StdEncoding.EncodeToString(metaBytes)
 }

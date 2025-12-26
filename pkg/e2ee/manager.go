@@ -198,18 +198,23 @@ func (m *Manager) InitFromLoginKeyChain(serverPubB64, encryptedKeyChainB64 strin
 }
 
 func (m *Manager) EncryptMessageV2(chatID, from string, myKeyID int, peerPubKeyB64 string, senderKeyID, receiverKeyID, contentType int, plaintext string) ([]string, error) {
+	// Standard text message payload
+	payload, err := json.Marshal(map[string]string{"text": plaintext})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+	return m.EncryptMessageV2Raw(chatID, from, myKeyID, peerPubKeyB64, senderKeyID, receiverKeyID, contentType, payload)
+}
+
+// EncryptMessageV2Raw encrypts a raw JSON payload (bytes) instead of forcing a text object.
+// This is required for media messages
+func (m *Manager) EncryptMessageV2Raw(chatID, from string, myKeyID int, peerPubKeyB64 string, senderKeyID, receiverKeyID, contentType int, payloadJSON []byte) ([]string, error) {
 	chanID, seq, err := m.ensureChannelForEncrypt(chatID, myKeyID, senderKeyID, receiverKeyID, peerPubKeyB64)
 	if err != nil {
 		return nil, err
 	}
 
-	//plaintext is a JSON object wrapping the text.
-	payload, err := json.Marshal(map[string]string{"text": plaintext})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	ctB64, err := m.runner.ChannelEncryptV2(chanID, chatID, from, senderKeyID, receiverKeyID, contentType, seq, string(payload))
+	ctB64, err := m.runner.ChannelEncryptV2(chanID, chatID, from, senderKeyID, receiverKeyID, contentType, seq, string(payloadJSON))
 	if err != nil {
 		return nil, err
 	}
@@ -450,6 +455,15 @@ func (m *Manager) ensureGroupChannel(chatMid string, groupKeyID, unwrappedKeyID,
 }
 
 func (m *Manager) EncryptGroupMessage(chatMid, fromMid string, plaintext string) ([]string, error) {
+	payload, err := json.Marshal(map[string]string{"text": plaintext})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+	return m.EncryptGroupMessageRaw(chatMid, fromMid, 0, payload)
+}
+
+// grpup messages are encrypted differently compared to 1:1 messages
+func (m *Manager) EncryptGroupMessageRaw(chatMid, fromMid string, contentType int, payload []byte) ([]string, error) {
 	m.mu.Lock()
 	groupKeyID, ok := m.latestGroupKey[chatMid]
 	var unwrappedKeyID int
@@ -470,12 +484,7 @@ func (m *Manager) EncryptGroupMessage(chatMid, fromMid string, plaintext string)
 		return nil, err
 	}
 
-	payload, err := json.Marshal(map[string]string{"text": plaintext})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	ctB64, err := m.runner.ChannelEncryptV2(chanID, chatMid, fromMid, myKeyID, groupKeyID, 0, seq, string(payload))
+	ctB64, err := m.runner.ChannelEncryptV2(chanID, chatMid, fromMid, myKeyID, groupKeyID, contentType, seq, string(payload))
 	if err != nil {
 		return nil, err
 	}

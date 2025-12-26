@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // LoginV2 performs the loginV2 RPC call to authenticate a user
@@ -397,4 +398,34 @@ func (c *Client) GetChats(mids []string, withMembers, withInvitees bool) (*GetCh
 		return nil, fmt.Errorf("getChats failed: %s", wrapper.Message)
 	}
 	return &wrapper.Data, nil
+}
+
+// this token is used to encrypt images, videos, and files uploaded to LINE's OBS storage
+func (c *Client) AcquireEncryptedAccessToken() (string, error) {
+	// 2 = FeatureType::OBS_Authorization.
+	resp, err := c.callRPC("TalkService", "acquireEncryptedAccessToken", 2)
+	if err != nil {
+		return "", err
+	}
+
+	var wrapper struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    string `json:"data"` // Format: "expirySeconds\x1eToken"
+	}
+
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return "", fmt.Errorf("failed to decode acquireEncryptedAccessToken response: %w", err)
+	}
+
+	if wrapper.Code != 0 {
+		return "", fmt.Errorf("acquireEncryptedAccessToken API error: %s", wrapper.Message)
+	}
+
+	parts := strings.Split(wrapper.Data, "\x1e")
+	if len(parts) < 2 {
+		return "", fmt.Errorf("invalid encrypted token format: missing separator")
+	}
+
+	return parts[1], nil
 }

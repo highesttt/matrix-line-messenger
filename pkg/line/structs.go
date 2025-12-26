@@ -2,6 +2,27 @@ package line
 
 import "encoding/json"
 
+type FlexibleMidMap map[string]bool
+
+func (f *FlexibleMidMap) UnmarshalJSON(data []byte) error {
+	var m map[string]bool
+	if err := json.Unmarshal(data, &m); err == nil {
+		*f = m
+		return nil
+	}
+
+	var arr []string
+	if err := json.Unmarshal(data, &arr); err == nil {
+		*f = make(map[string]bool, len(arr))
+		for _, mid := range arr {
+			(*f)[mid] = true
+		}
+		return nil
+	}
+
+	return nil
+}
+
 type LoginRequest struct {
 	Type             int    `json:"type"` // 0=Email/Password, 1=QRCode, 2=Secret
 	IdentityProvider int    `json:"identityProvider"`
@@ -191,14 +212,14 @@ type GetChatsResponse struct {
 }
 
 type Chat struct {
-	ChatMid              string    `json:"chatMid"`
-	CreatedTime          int64     `json:"createdTime"`
-	NotificationDisabled bool      `json:"notificationDisabled"`
-	FavoriteTimestamp    int64     `json:"favoriteTimestamp"`
-	ChatName             string    `json:"chatName"`
-	PicturePath          string    `json:"picturePath"`
-	Extra                ChatExtra `json:"extra"`
-	Type                 int       `json:"type"` // 0=GROUP, 1=ROOM
+	ChatMid              string      `json:"chatMid"`
+	CreatedTime          json.Number `json:"createdTime"`
+	NotificationDisabled bool        `json:"notificationDisabled"`
+	FavoriteTimestamp    json.Number `json:"favoriteTimestamp"`
+	ChatName             string      `json:"chatName"`
+	PicturePath          string      `json:"picturePath"`
+	Extra                ChatExtra   `json:"extra"`
+	Type                 int         `json:"type"` // 0=GROUP, 1=ROOM
 }
 
 type ChatExtra struct {
@@ -207,12 +228,18 @@ type ChatExtra struct {
 }
 
 type GroupExtra struct {
-	CreatorMid       string          `json:"creatorMid"`
-	PreventedMids    map[string]bool `json:"preventedMids"`
-	InvitationTicket string          `json:"invitationTicket"`
-	MemberMids       map[string]bool `json:"memberMids"`
-	InviteeMids      map[string]bool `json:"inviteeMids"`
+	CreatorMid       string         `json:"creatorMid"`
+	PreventedMids    FlexibleMidMap `json:"preventedMids"`
+	InvitationTicket string         `json:"invitationTicket"`
+	MemberMids       FlexibleMidMap `json:"memberMids"`
+	InviteeMids      FlexibleMidMap `json:"inviteeMids"`
 }
 
 type PeerExtra struct {
+}
+
+type AcquireEncryptedAccessTokenResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    string `json:"data"` // Format: "expirySeconds\x1eToken"
 }

@@ -5,6 +5,8 @@ go 1.24.0
 require (
 	github.com/rs/zerolog v1.34.0
 	go.mau.fi/util v0.9.3
+	golang.org/x/crypto v0.44.0
+	golang.org/x/image v0.23.0
 	maunium.net/go/mautrix v0.26.0
 )
 
@@ -30,7 +32,6 @@ require (
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/yuin/goldmark v1.7.13 // indirect
 	go.mau.fi/zeroconfig v0.2.0 // indirect
-	golang.org/x/crypto v0.44.0 // indirect
 	golang.org/x/exp v0.0.0-20251113190631-e25ba8c21ef6 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sync v0.18.0 // indirect
