@@ -342,8 +342,13 @@ func (c *Client) RefreshAccessToken(refreshToken string) (*TokenV3IssueResult, e
 const OBSBaseURL = "https://obs.line-apps.com"
 
 // UploadOBS uploads media to LINE's Object Storage and returns the Object ID (OID).
-// As per logs, we post to /r/talk/emi/reqid-<uuid>
+// Default uses "emi" SID for images
 func (c *Client) UploadOBS(data []byte) (string, error) {
+	return c.UploadOBSWithSID(data, "emi")
+}
+
+// SID: emi (images), emv (videos), ema (audio), emf (files)
+func (c *Client) UploadOBSWithSID(data []byte, sid string) (string, error) {
 	// First, acquire the OBS-specific encrypted access token
 	obsToken, err := c.AcquireEncryptedAccessToken()
 	if err != nil {
@@ -357,7 +362,7 @@ func (c *Client) UploadOBS(data []byte) (string, error) {
 	}
 	reqID := fmt.Sprintf("%x-%x-%x-%x-%x", reqIDBytes[0:4], reqIDBytes[4:6], reqIDBytes[6:8], reqIDBytes[8:10], reqIDBytes[10:])
 
-	url := fmt.Sprintf("%s/r/talk/emi/reqid-%s", OBSBaseURL, reqID)
+	url := fmt.Sprintf("%s/r/talk/%s/reqid-%s", OBSBaseURL, sid, reqID)
 
 	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
 	if err != nil {
@@ -407,13 +412,18 @@ func (c *Client) UploadOBS(data []byte) (string, error) {
 
 // UploadOBSWithOID uploads data to a specific OID (used for preview/thumbnail uploads)
 func (c *Client) UploadOBSWithOID(data []byte, oid string) error {
+	return c.UploadOBSWithOIDAndSID(data, oid, "emi")
+}
+
+// UploadOBSWithOIDAndSID uploads data to a specific OID with a specific SID
+func (c *Client) UploadOBSWithOIDAndSID(data []byte, oid string, sid string) error {
 	// First, acquire the OBS-specific encrypted access token
 	obsToken, err := c.AcquireEncryptedAccessToken()
 	if err != nil {
 		return fmt.Errorf("failed to acquire OBS token: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/r/talk/emi/%s", OBSBaseURL, oid)
+	url := fmt.Sprintf("%s/r/talk/%s/%s", OBSBaseURL, sid, oid)
 
 	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
 	if err != nil {
@@ -453,8 +463,13 @@ func (c *Client) UploadOBSWithOID(data []byte, oid string) error {
 
 // DownloadOBS retrieves media from LINE's Object Storage using the OID.
 func (c *Client) DownloadOBS(oid string, messageID string) ([]byte, error) {
-	// URL structure from logs: https://obs.line-apps.com/r/talk/emi/{OID}
-	url := fmt.Sprintf("%s/r/talk/emi/%s", OBSBaseURL, oid)
+	return c.DownloadOBSWithSID(oid, messageID, "emi")
+}
+
+func (c *Client) DownloadOBSWithSID(oid string, messageID string, sid string) ([]byte, error) {
+	// URL structure: https://obs.line-apps.com/r/talk/{SID}/{OID}
+	// SID: emi (images), emv (videos), ema (audio), emf (files)
+	url := fmt.Sprintf("%s/r/talk/%s/%s", OBSBaseURL, sid, oid)
 
 	obsToken, err := c.AcquireEncryptedAccessToken()
 	if err != nil {
