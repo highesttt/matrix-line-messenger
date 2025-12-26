@@ -305,7 +305,7 @@ func extractVideoThumbnail(videoData []byte) ([]byte, int, int, error) {
 	tmpThumbFile.Close()
 
 	err = ffmpeg.Input(tmpVideoFile.Name()).
-		Filter("scale", ffmpeg.Args{fmt.Sprintf("384:384:force_original_aspect_ratio=decrease")}).
+		Filter("scale", ffmpeg.Args{"384:384:force_original_aspect_ratio=decrease"}).
 		Output(tmpThumbFile.Name(), ffmpeg.KwArgs{
 			"vframes": 1,
 			"q:v":     5,
@@ -1837,7 +1837,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			return nil, fmt.Errorf("failed to get peer key: %w", err)
 		}
 
-		chunks, err = lc.E2EE.EncryptMessageV2Raw(portalMid, fromMid, myKeyID, peerPub, myRaw, peerRaw, contentType, payload)
+		chunks, _ = lc.E2EE.EncryptMessageV2Raw(portalMid, fromMid, myKeyID, peerPub, myRaw, peerRaw, contentType, payload)
 	}
 
 	if err != nil {
