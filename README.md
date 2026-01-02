@@ -1,4 +1,4 @@
-# mautrix-line-messenger
+# matrix-line-messenger
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/highesttt/mautrix-line-messenger)](https://goreportcard.com/report/github.com/highesttt/mautrix-line-messenger)
 ![Languages](https://img.shields.io/github/languages/top/highesttt/mautrix-line-messenger.svg)
@@ -23,3 +23,4 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 - [x] Group chats
 - [x] Media messages (images, videos, voice notes, files)
 - [ ] Sticker support
+
