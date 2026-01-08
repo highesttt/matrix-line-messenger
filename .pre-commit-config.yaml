@@ -15,7 +15,7 @@ repos:
         exclude: "pb\\.go$"
         args:
           - "-local"
-          - "github.com/highesttt/mautrix-line-messenger"
+          - "github.com/highesttt/matrix-line-messenger"
           - "-w"
       - id: go-vet-mod
       - id: go-staticcheck-repo-mod

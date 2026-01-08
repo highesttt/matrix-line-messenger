@@ -18,8 +18,8 @@ import (
 
 	"github.com/rs/zerolog/hlog"
 
-	"github.com/highesttt/mautrix-line-messenger/pkg/e2ee"
-	"github.com/highesttt/mautrix-line-messenger/pkg/line"
+	"github.com/highesttt/matrix-line-messenger/pkg/e2ee"
+	"github.com/highesttt/matrix-line-messenger/pkg/line"
 )
 
 type LineConnector struct {
@@ -63,7 +63,7 @@ func (lc *LineConnector) GetName() bridgev2.BridgeName {
 		NetworkURL:       "https://line.me",
 		NetworkIcon:      "https://www.google.com/s2/favicons?domain=line.me&sz=256",
 		NetworkID:        "line",
-		BeeperBridgeType: "github.com/highesttt/mautrix-line-messenger",
+		BeeperBridgeType: "github.com/highesttt/matrix-line-messenger",
 		DefaultPort:      29322,
 	}
 }

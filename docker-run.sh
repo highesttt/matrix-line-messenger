@@ -4,7 +4,7 @@ if [[ -z "$GID" ]]; then
 	GID="$UID"
 fi
 
-BINARY_NAME=/usr/bin/mautrix-line
+BINARY_NAME=/usr/bin/matrix-line
 
 function fixperms {
 	chown -R $UID:$GID /data

@@ -1,8 +1,8 @@
 # matrix-line-messenger
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/highesttt/mautrix-line-messenger)](https://goreportcard.com/report/github.com/highesttt/mautrix-line-messenger)
-![Languages](https://img.shields.io/github/languages/top/highesttt/mautrix-line-messenger.svg)
-[![License](https://img.shields.io/github/license/highesttt/mautrix-line-messenger.svg)](LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/highesttt/matrix-line-messenger)](https://goreportcard.com/report/github.com/highesttt/matrix-line-messenger)
+![Languages](https://img.shields.io/github/languages/top/highesttt/matrix-line-messenger.svg)
+[![License](https://img.shields.io/github/license/highesttt/matrix-line-messenger.svg)](LICENSE)
 
 A Matrix bridge for LINE Messenger using mautrix-go.\
 Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge

@@ -1,4 +1,4 @@
-module github.com/highesttt/mautrix-line-messenger
+module github.com/highesttt/matrix-line-messenger
 
 go 1.24.0
 

@@ -3,7 +3,7 @@ package main
 import (
 	"maunium.net/go/mautrix/bridgev2/matrix/mxmain"
 
-	"github.com/highesttt/mautrix-line-messenger/pkg/connector"
+	"github.com/highesttt/matrix-line-messenger/pkg/connector"
 )
 
 // Information to find out exactly which commit the bridge was built from.
@@ -16,9 +16,9 @@ var (
 
 func main() {
 	m := mxmain.BridgeMain{
-		Name:        "mautrix-line",
+		Name:        "matrix-line",
 		Description: "A Matrix-LINE bridge",
-		URL:         "https://github.com/highesttt/mautrix-line-messenger",
+		URL:         "https://github.com/highesttt/matrix-line-messenger",
 		Version:     "0.1.0",
 		Connector:   &connector.LineConnector{},
 	}

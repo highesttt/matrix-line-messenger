@@ -37,8 +37,8 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"github.com/highesttt/mautrix-line-messenger/pkg/e2ee"
-	"github.com/highesttt/mautrix-line-messenger/pkg/line"
+	"github.com/highesttt/matrix-line-messenger/pkg/e2ee"
+	"github.com/highesttt/matrix-line-messenger/pkg/line"
 )
 
 type LineClient struct {

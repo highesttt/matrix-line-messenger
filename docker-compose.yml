@@ -1,10 +1,10 @@
-version: '3.8'
+version: "3.8"
 
 services:
-  mautrix-line:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    volumes:
-      - ./data:/data
-    restart: unless-stopped
+    matrix-line:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        volumes:
+            - ./data:/data
+        restart: unless-stopped

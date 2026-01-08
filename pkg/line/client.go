@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	gen "github.com/highesttt/mautrix-line-messenger/pkg"
-	"github.com/highesttt/mautrix-line-messenger/pkg/line/password"
-	"github.com/highesttt/mautrix-line-messenger/pkg/line/secret"
+	gen "github.com/highesttt/matrix-line-messenger/pkg"
+	"github.com/highesttt/matrix-line-messenger/pkg/line/password"
+	"github.com/highesttt/matrix-line-messenger/pkg/line/secret"
 )
 
 const (

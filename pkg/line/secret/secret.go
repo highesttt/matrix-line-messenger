@@ -3,7 +3,7 @@ package secret
 import (
 	"fmt"
 
-	gen "github.com/highesttt/mautrix-line-messenger/pkg"
+	gen "github.com/highesttt/matrix-line-messenger/pkg"
 )
 
 type SecretResult struct {
