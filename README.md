@@ -22,5 +22,4 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 - [ ] Prefetch chats
 - [x] Group chats
 - [x] Media messages (images, videos, voice notes, files)
-- [ ] Sticker support
-
+- [x] Sticker support

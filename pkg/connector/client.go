@@ -1201,6 +1201,84 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 				}
 			}
 
+			// Handle Sticker (7)
+			if data.ContentType == 7 {
+				stkID := data.ContentMetadata["STKID"]
+				stkTxt := data.ContentMetadata["STKTXT"]
+				stkOpt := data.ContentMetadata["STKOPT"]
+				if stkTxt == "" {
+					stkTxt = "[Sticker]"
+				}
+
+				if stkID != "" {
+					var url string
+					if strings.Contains(stkOpt, "A") {
+						url = fmt.Sprintf("https://stickershop.line-scdn.net/stickershop/v1/sticker/%s/android/sticker_animation.png", stkID)
+					} else {
+						url = fmt.Sprintf("https://stickershop.line-scdn.net/stickershop/v1/sticker/%s/android/sticker.png", stkID)
+					}
+
+					resp, err := lc.HTTPClient.Get(url)
+					// If animated fetch fails (e.g. 404), fallback to static if we tried animation
+					if (err != nil || resp.StatusCode != 200) && strings.Contains(stkOpt, "A") {
+						if resp != nil {
+							resp.Body.Close()
+						}
+						url = fmt.Sprintf("https://stickershop.line-scdn.net/stickershop/v1/sticker/%s/android/sticker.png", stkID)
+						resp, err = lc.HTTPClient.Get(url)
+					}
+
+					if err != nil {
+						lc.UserLogin.Bridge.Log.Warn().Err(err).Str("stk_id", stkID).Msg("Failed to download sticker")
+					} else if resp.StatusCode != 200 {
+						lc.UserLogin.Bridge.Log.Warn().Int("status_code", resp.StatusCode).Str("stk_id", stkID).Msg("Failed to download sticker")
+						resp.Body.Close()
+					} else {
+						defer resp.Body.Close()
+						stkData, err := io.ReadAll(resp.Body)
+						if err != nil {
+							lc.UserLogin.Bridge.Log.Warn().Err(err).Str("stk_id", stkID).Msg("Failed to read sticker body")
+						} else {
+							mxc, file, err := intent.UploadMedia(ctx, portal.MXID, stkData, "sticker.png", "image/png")
+							if err != nil {
+								lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload sticker to Matrix")
+							} else {
+								return &bridgev2.ConvertedMessage{
+									Parts: []*bridgev2.ConvertedMessagePart{
+										{
+											Type: event.EventMessage,
+											Content: &event.MessageEventContent{
+												MsgType: event.MsgImage,
+												Body:    stkTxt,
+												URL:     mxc,
+												File:    file,
+												Info: &event.FileInfo{
+													MimeType: "image/png",
+													Size:     len(stkData),
+												},
+											},
+										},
+									},
+								}, nil
+							}
+						}
+					}
+				}
+
+				// Fallback to text if download/upload fails
+				return &bridgev2.ConvertedMessage{
+					Parts: []*bridgev2.ConvertedMessagePart{
+						{
+							Type: event.EventMessage,
+							Content: &event.MessageEventContent{
+								MsgType: event.MsgText,
+								Body:    stkTxt,
+							},
+						},
+					},
+				}, nil
+			}
+
 			// Default to Text
 			return &bridgev2.ConvertedMessage{
 				Parts: []*bridgev2.ConvertedMessagePart{
