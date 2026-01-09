@@ -34,7 +34,6 @@ import (
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
-	"maunium.net/go/mautrix/id"
 
 	"github.com/rs/zerolog"
 
@@ -2026,15 +2025,24 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		Chunks:          chunks,
 	}
 
+	var relatedMsg *database.Message
+
 	if msg.ReplyTo != nil {
-		dbMsg, err := lc.UserLogin.Bridge.DB.Message.GetPartByMXID(ctx, id.EventID(msg.ReplyTo.ID))
-		if err == nil && dbMsg != nil && dbMsg.ID != "" {
-			lineMsg.RelatedMessageID = string(dbMsg.ID)
-			lineMsg.MessageRelationType = 3
-			lineMsg.RelatedMessageServiceCode = 1
-		} else {
-			lc.UserLogin.Bridge.Log.Warn().Str("reply_to_mxid", string(msg.ReplyTo.ID)).Msg("Failed to resolve reply target to LINE ID")
+		relatedMsg = msg.ReplyTo
+	} else if msg.Content.RelatesTo != nil && msg.Content.RelatesTo.InReplyTo != nil {
+		replyToMXID := msg.Content.RelatesTo.InReplyTo.EventID
+		if replyToMXID != "" {
+			dbMsg, err := lc.UserLogin.Bridge.DB.Message.GetPartByMXID(ctx, replyToMXID)
+			if err == nil && dbMsg != nil {
+				relatedMsg = dbMsg
+			}
 		}
+	}
+
+	if relatedMsg != nil && relatedMsg.ID != "" && !strings.HasPrefix(string(relatedMsg.ID), "local-") {
+		lineMsg.RelatedMessageID = string(relatedMsg.ID)
+		lineMsg.MessageRelationType = 3
+		lineMsg.RelatedMessageServiceCode = 1
 	}
 
 	reqSeq := int(now % 1_000_000_000)
