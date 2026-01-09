@@ -18,8 +18,8 @@ import (
 
 	"github.com/rs/zerolog/hlog"
 
-	"github.com/highesttt/mautrix-line-messenger/pkg/e2ee"
-	"github.com/highesttt/mautrix-line-messenger/pkg/line"
+	"github.com/highesttt/matrix-line-messenger/pkg/e2ee"
+	"github.com/highesttt/matrix-line-messenger/pkg/line"
 )
 
 type LineConnector struct {
@@ -61,9 +61,9 @@ func (lc *LineConnector) GetName() bridgev2.BridgeName {
 	return bridgev2.BridgeName{
 		DisplayName:      "LINE",
 		NetworkURL:       "https://line.me",
-		NetworkIcon:      "https://www.google.com/s2/favicons?domain=line.me&sz=256",
+		NetworkIcon:      "",
 		NetworkID:        "line",
-		BeeperBridgeType: "github.com/highesttt/mautrix-line-messenger",
+		BeeperBridgeType: "github.com/highesttt/matrix-line-messenger",
 		DefaultPort:      29322,
 	}
 }
@@ -137,7 +137,7 @@ var _ bridgev2.LoginProcessUserInput = (*LineEmailLogin)(nil)
 func (ll *LineEmailLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeUserInput,
-		StepID:       "fi.mau.line.enter_creds",
+		StepID:       "dev.highest.matrix.line.enter_creds",
 		Instructions: "Please enter your LINE email and password.",
 		UserInputParams: &bridgev2.LoginUserInputParams{
 			Fields: []bridgev2.LoginInputDataField{
@@ -221,7 +221,7 @@ func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]
 
 		return &bridgev2.LoginStep{
 			Type:         bridgev2.LoginStepTypeUserInput,
-			StepID:       "fi.mau.line.wait_verification",
+			StepID:       "dev.highest.matrix.line.wait_verification",
 			Instructions: instructions,
 			UserInputParams: &bridgev2.LoginUserInputParams{
 				Fields: []bridgev2.LoginInputDataField{
@@ -239,7 +239,7 @@ func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]
 	if res.Certificate != "" {
 		return &bridgev2.LoginStep{
 			Type:         bridgev2.LoginStepTypeUserInput,
-			StepID:       "fi.mau.line.enter_pin",
+			StepID:       "dev.highest.matrix.line.enter_pin",
 			Instructions: fmt.Sprintf("Please open the LINE app on your mobile device and enter this PIN code: **%s**\n\nAfter entering the code, click 'Continue' below.", res.Certificate),
 			UserInputParams: &bridgev2.LoginUserInputParams{
 				Fields: []bridgev2.LoginInputDataField{
@@ -327,7 +327,7 @@ func (ll *LineEmailLogin) finishLogin(ctx context.Context, res *line.LoginResult
 
 	return &bridgev2.LoginStep{
 		Type:           bridgev2.LoginStepTypeComplete,
-		StepID:         "fi.mau.line.complete",
+		StepID:         "dev.highest.matrix.line.complete",
 		Instructions:   "Successfully logged in",
 		CompleteParams: &bridgev2.LoginCompleteParams{UserLoginID: ul.ID, UserLogin: ul},
 	}, nil

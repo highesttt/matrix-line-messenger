@@ -308,22 +308,23 @@ func (c *Client) GetE2EEPublicKey(mid string, keyVersion, keyID int) (*E2EEPubli
 	return parseE2EEPublicKey(wrapper.Data)
 }
 
-func (c *Client) SendMessage(reqSeq int64, msg *Message) error {
+func (c *Client) SendMessage(reqSeq int64, msg *Message) (*Message, error) {
 	resp, err := c.callRPC("TalkService", "sendMessage", reqSeq, msg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var wrapper struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
+		Code    int      `json:"code"`
+		Message string   `json:"message"`
+		Data    *Message `json:"data"`
 	}
 	if err := json.Unmarshal(resp, &wrapper); err != nil {
-		return err
+		return nil, err
 	}
 	if wrapper.Code != 0 {
-		return fmt.Errorf("sendMessage failed: %s", wrapper.Message)
+		return nil, fmt.Errorf("sendMessage failed: %s", wrapper.Message)
 	}
-	return nil
+	return wrapper.Data, nil
 }
 
 // SendChatChecked sends a read receipt for a message in a chat

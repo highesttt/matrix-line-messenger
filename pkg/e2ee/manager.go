@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 
-	gen "github.com/highesttt/mautrix-line-messenger/pkg"
-	"github.com/highesttt/mautrix-line-messenger/pkg/line"
+	gen "github.com/highesttt/matrix-line-messenger/pkg"
+	"github.com/highesttt/matrix-line-messenger/pkg/line"
 )
 
 /*

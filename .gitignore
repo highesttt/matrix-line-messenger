@@ -5,7 +5,7 @@
 *.db*
 *.log*
 
-/mautrix-line*
+/matrix-line*
 /start
 
 /docs

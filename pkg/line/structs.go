@@ -79,6 +79,10 @@ type Message struct {
 	Text string `json:"text,omitempty"`
 
 	Chunks []string `json:"chunks,omitempty"`
+
+	RelatedMessageID          string `json:"relatedMessageId,omitempty"`
+	MessageRelationType       int    `json:"messageRelationType,omitempty"`
+	RelatedMessageServiceCode int    `json:"relatedMessageServiceCode,omitempty"`
 }
 
 // E2EEPublicKey represents the peer key returned by negotiateE2EEPublicKey
