@@ -1252,7 +1252,7 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 										{
 											Type: event.EventMessage,
 											Content: &event.MessageEventContent{
-												MsgType: event.MsgFile,
+												MsgType: event.MsgImage,
 												Body:    "sticker.png",
 												URL:     mxc,
 												File:    file,

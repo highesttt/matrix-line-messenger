@@ -62,13 +62,13 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 6. Build and run the bridge using Docker (use -d for detached mode):
 
     ```bash
-    docker compose up --build (-d)
+    docker compose up --build -d
     ```
 
     To run the bridge without rebuilding, use:
 
     ```bash
-    docker compose up (-d)
+    docker compose up -d
     ```
 
 ## Login
