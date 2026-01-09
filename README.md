@@ -24,7 +24,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 - [x] Read receipts
 - [ ] Typing indicators
 - [ ] Reaction support
-- [ ] Reply support
+- [x] Reply support
 - [ ] Prefetch chats
 - [x] Group chats
 - [x] Media messages (images, videos, voice notes, files)
