@@ -34,6 +34,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 
 	"github.com/rs/zerolog"
 
@@ -876,6 +877,7 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 		Data: *msg,
 		ID:   networkid.MessageID(msg.ID),
 		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data line.Message) (*bridgev2.ConvertedMessage, error) {
+			replyRelatesTo := lc.resolveReplyRelatesTo(ctx, &data)
 			// Handle Images
 			if data.ContentType == 1 { // Image
 				oid := data.ContentMetadata["OID"]
@@ -936,10 +938,11 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 							{
 								Type: event.EventMessage,
 								Content: &event.MessageEventContent{
-									MsgType: event.MsgImage,
-									Body:    "image.jpg",
-									URL:     mxc,
-									File:    file,
+									MsgType:   event.MsgImage,
+									Body:      "image.jpg",
+									URL:       mxc,
+									File:      file,
+									RelatesTo: replyRelatesTo,
 								},
 							},
 						},
@@ -1081,11 +1084,12 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 							{
 								Type: event.EventMessage,
 								Content: &event.MessageEventContent{
-									MsgType: event.MsgVideo,
-									Body:    fileName,
-									URL:     mxc,
-									File:    file,
-									Info:    videoInfo,
+									MsgType:   event.MsgVideo,
+									Body:      fileName,
+									URL:       mxc,
+									File:      file,
+									Info:      videoInfo,
+									RelatesTo: replyRelatesTo,
 								},
 							},
 						},
@@ -1194,6 +1198,7 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 										MimeType: mimeType,
 										Size:     len(fileData),
 									},
+									RelatesTo: replyRelatesTo,
 								},
 							},
 						},
@@ -1248,14 +1253,15 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 										{
 											Type: event.EventMessage,
 											Content: &event.MessageEventContent{
-												MsgType: event.MsgImage,
-												Body:    stkTxt,
+												MsgType: event.MsgFile,
+												Body:    "sticker.png",
 												URL:     mxc,
 												File:    file,
 												Info: &event.FileInfo{
 													MimeType: "image/png",
 													Size:     len(stkData),
 												},
+												RelatesTo: replyRelatesTo,
 											},
 										},
 									},
@@ -1271,8 +1277,9 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 						{
 							Type: event.EventMessage,
 							Content: &event.MessageEventContent{
-								MsgType: event.MsgText,
-								Body:    stkTxt,
+								MsgType:   event.MsgText,
+								Body:      stkTxt,
+								RelatesTo: replyRelatesTo,
 							},
 						},
 					},
@@ -1285,8 +1292,9 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					{
 						Type: event.EventMessage,
 						Content: &event.MessageEventContent{
-							MsgType: event.MsgText,
-							Body:    unwrappedText,
+							MsgType:   event.MsgText,
+							Body:      unwrappedText,
+							RelatesTo: replyRelatesTo,
 						},
 					},
 				},
@@ -1631,6 +1639,38 @@ func (lc *LineClient) ensurePeerKeyForMessage(ctx context.Context, msg *line.Mes
 			lc.UserLogin.Bridge.Log.Warn().Err(err).Err(err2).Str("peer", msg.From).Int("key_id", peerRaw).Msg("Failed to fetch peer key for decrypt")
 		}
 	}
+}
+
+// resolveReplyRelatesTo looks up the Matrix event ID for a replied-to LINE message.
+func (lc *LineClient) resolveReplyRelatesTo(ctx context.Context, data *line.Message) *event.RelatesTo {
+	if data == nil {
+		return nil
+	}
+
+	relatedID := data.RelatedMessageID
+	if relatedID == "" && data.ContentMetadata != nil {
+		relatedID = data.ContentMetadata["message_relation_server_message_id"]
+	}
+
+	if relatedID == "" {
+		return nil
+	}
+
+	if data.MessageRelationType != 0 && data.MessageRelationType != 3 {
+		return nil
+	}
+
+	dbMsg, err := lc.UserLogin.Bridge.DB.Message.GetPartByID(ctx, lc.UserLogin.ID, networkid.MessageID(relatedID), "")
+	if err != nil {
+		lc.UserLogin.Bridge.Log.Debug().Err(err).Str("related_msg_id", relatedID).Msg("Failed to lookup reply target")
+		return nil
+	}
+	if dbMsg == nil || dbMsg.MXID == "" {
+		lc.UserLogin.Bridge.Log.Debug().Str("related_msg_id", relatedID).Msg("No Matrix event found for reply target")
+		return nil
+	}
+
+	return &event.RelatesTo{InReplyTo: &event.InReplyTo{EventID: dbMsg.MXID}}
 }
 
 func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
@@ -1986,6 +2026,17 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		Chunks:          chunks,
 	}
 
+	if msg.ReplyTo != nil {
+		dbMsg, err := lc.UserLogin.Bridge.DB.Message.GetPartByMXID(ctx, id.EventID(msg.ReplyTo.ID))
+		if err == nil && dbMsg != nil && dbMsg.ID != "" {
+			lineMsg.RelatedMessageID = string(dbMsg.ID)
+			lineMsg.MessageRelationType = 3
+			lineMsg.RelatedMessageServiceCode = 1
+		} else {
+			lc.UserLogin.Bridge.Log.Warn().Str("reply_to_mxid", string(msg.ReplyTo.ID)).Msg("Failed to resolve reply target to LINE ID")
+		}
+	}
+
 	reqSeq := int(now % 1_000_000_000)
 	lc.reqSeqMu.Lock()
 	if lc.sentReqSeqs == nil {
@@ -1994,13 +2045,14 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 	lc.sentReqSeqs[reqSeq] = time.Now()
 	lc.reqSeqMu.Unlock()
 
-	if err := client.SendMessage(int64(reqSeq), lineMsg); err != nil {
+	sentMsg, err := client.SendMessage(int64(reqSeq), lineMsg)
+	if err != nil {
 		return nil, err
 	}
 
 	return &bridgev2.MatrixMessageResponse{
 		DB: &database.Message{
-			ID:        networkid.MessageID(lineMsg.ID),
+			ID:        networkid.MessageID(sentMsg.ID),
 			SenderID:  makeUserID(string(lc.UserLogin.ID)),
 			Timestamp: time.UnixMilli(now),
 		},
