@@ -72,6 +72,5 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
 ## Login
 
-1. Open the Matrix client of your choice and start a chat with `@sh-line:your.matrix.homeserver.domain`. (For local beeper bridges, use `@sh-line:beeper.local`)
+1. Open the Matrix client of your choice and start a chat with `@sh-linebot:your.matrix.homeserver.domain`. (For local beeper bridges, use `@sh-linebot:beeper.local`)
 2. Send the command `login` and follow the instructions to log in to your LINE account.
-
