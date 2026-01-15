@@ -113,7 +113,7 @@ func (lc *LineConnector) GetLoginFlows() []bridgev2.LoginFlow {
 	return []bridgev2.LoginFlow{{
 		Name:        "Login",
 		Description: "Login with your LINE Email and Password",
-		ID:      "dev.highest.matrix.line.email_login",
+		ID:          "dev.highest.matrix.line.email_login",
 	}}
 }
 
