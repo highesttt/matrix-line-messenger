@@ -122,10 +122,11 @@ func (lc *LineConnector) CreateLogin(ctx context.Context, user *bridgev2.User, f
 }
 
 type LineEmailLogin struct {
-	User     *bridgev2.User
-	Email    string
-	Password string
-	Verifier string
+	User        *bridgev2.User
+	Email       string
+	Password    string
+	Verifier    string
+	AwaitingPIN bool
 
 	pollResult chan *line.LoginResult
 	pollErr    chan error
@@ -134,6 +135,7 @@ type LineEmailLogin struct {
 }
 
 var _ bridgev2.LoginProcessUserInput = (*LineEmailLogin)(nil)
+var _ bridgev2.LoginProcessDisplayAndWait = (*LineEmailLogin)(nil)
 
 func (ll *LineEmailLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 	return &bridgev2.LoginStep{
@@ -159,18 +161,7 @@ func (ll *LineEmailLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error
 
 func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
 	if ll.Verifier != "" {
-		// User clicked "Continue" on the PIN screen. Wait for the background polling to finish.
-		select {
-		case res := <-ll.pollResult:
-			if res.AuthToken != "" {
-				return ll.finishLogin(ctx, res)
-			}
-		case err := <-ll.pollErr:
-			return nil, fmt.Errorf("verification failed: %w", err)
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-		return nil, fmt.Errorf("unexpected end of polling")
+		return ll.Wait(ctx)
 	}
 
 	if input["email"] != "" {
@@ -188,13 +179,45 @@ func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]
 		return nil, fmt.Errorf("login failed: %w", err)
 	}
 
+	return ll.handleLoginResponse(ctx, res)
+}
+
+func (ll *LineEmailLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {
+	if ll.Verifier != "" {
+		select {
+		case res := <-ll.pollResult:
+			if res.AuthToken != "" {
+				return ll.finishLogin(ctx, res)
+			}
+		case err := <-ll.pollErr:
+			return nil, fmt.Errorf("verification failed: %w", err)
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("unexpected end of polling")
+	}
+
+	if ll.AwaitingPIN {
+		client := line.NewClient("")
+		res, err := client.Login(ll.Email, ll.Password)
+		if err != nil {
+			return nil, fmt.Errorf("login failed: %w", err)
+		}
+		return ll.handleLoginResponse(ctx, res)
+	}
+
+	return nil, fmt.Errorf("no pending login continuation")
+}
+
+func (ll *LineEmailLogin) handleLoginResponse(ctx context.Context, res *line.LoginResult) (*bridgev2.LoginStep, error) {
 	if res.AuthToken != "" {
 		return ll.finishLogin(ctx, res)
 	}
 
 	if (res.Type == 3 || res.Type == 0) && res.Verifier != "" {
 		ll.Verifier = res.Verifier
-		instructions := "A verification request has been sent to your LINE device."
+		ll.AwaitingPIN = false
+		instructions := ""
 		pin := res.Pin
 		if res.PinCode != "" {
 			pin = res.PinCode
@@ -202,7 +225,6 @@ func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]
 		if pin != "" {
 			instructions += fmt.Sprintf("\n\n**Please enter this PIN code on your mobile device: %s**", pin)
 		}
-		instructions += "\n\nAfter entering the code (or approving), click 'Continue' to finish login."
 
 		// Start polling in background immediately so it's running while the user enters the PIN
 		ll.mu.Lock()
@@ -221,36 +243,23 @@ func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]
 		ll.mu.Unlock()
 
 		return &bridgev2.LoginStep{
-			Type:         bridgev2.LoginStepTypeUserInput,
+			Type:         bridgev2.LoginStepTypeDisplayAndWait,
 			StepID:       "dev.highest.matrix.line.wait_verification",
 			Instructions: instructions,
-			UserInputParams: &bridgev2.LoginUserInputParams{
-				Fields: []bridgev2.LoginInputDataField{
-					{
-						Type:        bridgev2.LoginInputFieldTypePassword, // hidden field just to have a submit button
-						ID:          "dummy",
-						Name:        "Action",
-						Description: "Press Enter/Continue when done",
-					},
-				},
+			DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{
+				Type: bridgev2.LoginDisplayTypeNothing,
 			},
 		}, nil
 	}
 
 	if res.Certificate != "" {
+		ll.AwaitingPIN = true
 		return &bridgev2.LoginStep{
-			Type:         bridgev2.LoginStepTypeUserInput,
+			Type:         bridgev2.LoginStepTypeDisplayAndWait,
 			StepID:       "dev.highest.matrix.line.enter_pin",
-			Instructions: fmt.Sprintf("Please open the LINE app on your mobile device and enter this PIN code: **%s**\n\nAfter entering the code, click 'Continue' below.", res.Certificate),
-			UserInputParams: &bridgev2.LoginUserInputParams{
-				Fields: []bridgev2.LoginInputDataField{
-					{
-						Type:        bridgev2.LoginInputFieldTypePassword, // hidden dummy field
-						ID:          "dummy",
-						Name:        "Hidden",
-						Description: "Press Enter to continue",
-					},
-				},
+			Instructions: fmt.Sprintf("Please open the LINE app on your mobile device and enter this PIN code: **%s**\n\nAfter entering the code, click Continue below.", res.Certificate),
+			DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{
+				Type: bridgev2.LoginDisplayTypeNothing,
 			},
 		}, nil
 	}

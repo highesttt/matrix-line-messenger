@@ -56,7 +56,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     mv config.yaml data/
     ```
 
-5. Change `public_address` in `data/config.yaml` to your desired public address
+5. Change `public_address` in `data/config.yaml` to your desired public address (default: `https://localhost:4000`).
 
 6. Build and run the bridge using Docker (use -d for detached mode):
 
@@ -72,5 +72,16 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
 ## Login
 
+### Using the LINE SelfHosted Bridge Bot
+
 1. Open the Matrix client of your choice and start a chat with `@sh-linebot:your.matrix.homeserver.domain`. (For local beeper bridges, use `@sh-linebot:beeper.local`)
 2. Send the command `login` and follow the instructions to log in to your LINE account.
+
+or
+
+### Via Beeper Desktop Settings
+
+1. Open Beeper Desktop Settings
+2. Navigate to `Bridges`
+3. Click on the three dots next to your LINE Bridge and select `Experimental: Add an account`
+4. Follow the instructions to log in to your LINE account.
