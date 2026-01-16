@@ -56,9 +56,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     mv config.yaml data/
     ```
 
-5. Change `public_address` in `data/config.yaml` to your desired public address (default: `https://localhost:4000`).
-
-6. Build and run the bridge using Docker (use -d for detached mode):
+5. Build and run the bridge using Docker (use -d for detached mode):
 
     ```bash
     docker compose up --build -d

@@ -8,15 +8,11 @@ import (
 	"time"
 
 	"go.mau.fi/util/configupgrade"
-	"go.mau.fi/util/exhttp"
-	"go.mau.fi/util/requestlog"
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/status"
-
-	"github.com/rs/zerolog/hlog"
 
 	"github.com/highesttt/matrix-line-messenger/pkg/e2ee"
 	"github.com/highesttt/matrix-line-messenger/pkg/line"
@@ -33,19 +29,10 @@ func (lc *LineConnector) Init(bridge *bridgev2.Bridge) {
 }
 
 func (lc *LineConnector) Start(ctx context.Context) error {
-	server, ok := lc.br.Matrix.(bridgev2.MatrixConnectorWithServer)
+	_, ok := lc.br.Matrix.(bridgev2.MatrixConnectorWithServer)
 	if !ok {
 		return fmt.Errorf("matrix connector does not implement MatrixConnectorWithServer")
-	} else if server.GetPublicAddress() == "" {
-		return fmt.Errorf("public address of bridge not configured")
 	}
-	router := http.NewServeMux()
-	server.GetRouter().Handle("/_line/", exhttp.ApplyMiddleware(
-		router,
-		exhttp.StripPrefix("/_line"),
-		hlog.NewHandler(lc.br.Log.With().Str("component", "line webhooks").Logger()),
-		requestlog.AccessLogger(requestlog.Options{TrustXForwardedFor: true}),
-	))
 	return nil
 }
 
