@@ -189,12 +189,12 @@ func (ll *LineEmailLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error)
 			if res.AuthToken != "" {
 				return ll.finishLogin(ctx, res)
 			}
+			return nil, fmt.Errorf("verification failed: no auth token received")
 		case err := <-ll.pollErr:
 			return nil, fmt.Errorf("verification failed: %w", err)
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("unexpected end of polling")
 	}
 
 	if ll.AwaitingPIN {
@@ -217,13 +217,13 @@ func (ll *LineEmailLogin) handleLoginResponse(ctx context.Context, res *line.Log
 	if (res.Type == 3 || res.Type == 0) && res.Verifier != "" {
 		ll.Verifier = res.Verifier
 		ll.AwaitingPIN = false
-		instructions := ""
+		instructions := "Please open the LINE app on your mobile device to complete the login."
 		pin := res.Pin
 		if res.PinCode != "" {
 			pin = res.PinCode
 		}
 		if pin != "" {
-			instructions += fmt.Sprintf("\n\n**Please enter this PIN code on your mobile device: %s**", pin)
+			instructions = fmt.Sprintf("Open LINE and enter this PIN on your mobile device: %s", pin)
 		}
 
 		// Start polling in background immediately so it's running while the user enters the PIN
