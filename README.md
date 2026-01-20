@@ -22,7 +22,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 - [x] Decrypt usernames
 - [x] Sending messages
 - [x] Read receipts
-- [ ] Reaction support
+- [x] Reaction support (Receive ONLY)
 - [x] Reply support
 - [ ] Prefetch chats
 - [x] Group chats
