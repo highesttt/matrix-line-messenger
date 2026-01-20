@@ -404,6 +404,28 @@ func (r *Runner) ChannelEncryptV2(channelID int, to, from string, senderKeyID, r
 	return ct, nil
 }
 
+// decrypts ciphertext with channel v1 (ios)
+func (r *Runner) ChannelDecryptV1(channelID, senderKeyID, receiverKeyID int, ciphertext string) (string, string, error) {
+	resp, err := r.call(map[string]any{
+		"type":          "channel_decrypt_v1",
+		"channelId":     channelID,
+		"senderKeyId":   senderKeyID,
+		"receiverKeyId": receiverKeyID,
+		"ciphertext":    ciphertext,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	var plaintext, base64 string
+	if v, ok := resp["plaintext"]; ok {
+		_ = json.Unmarshal(v, &plaintext)
+	}
+	if v, ok := resp["base64"]; ok {
+		_ = json.Unmarshal(v, &base64)
+	}
+	return plaintext, base64, nil
+}
+
 // decrypts ciphertext with channel v2
 func (r *Runner) ChannelDecryptV2(channelID int, to, from string, senderKeyID, receiverKeyID, contentType int, ciphertext string) (string, string, error) {
 	resp, err := r.call(map[string]any{
