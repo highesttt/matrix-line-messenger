@@ -2,7 +2,7 @@ package line
 
 import "encoding/json"
 
-type ReactionParam2 struct {
+type ReactionPayload struct {
 	ChatMid string          `json:"chatMid"`
 	Curr    *ReactionDetail `json:"curr,omitempty"`
 }
@@ -18,8 +18,8 @@ type PaidReactionType struct {
 	Version      int    `json:"version"`
 }
 
-func ParseReactionParam2(data string) (*ReactionParam2, error) {
-	var p ReactionParam2
+func ParseReactionParam2(data string) (*ReactionPayload, error) {
+	var p ReactionPayload
 	if err := json.Unmarshal([]byte(data), &p); err != nil {
 		return nil, err
 	}

@@ -731,13 +731,13 @@ func (lc *LineClient) handleOperation(ctx context.Context, op line.Operation) {
 
 	if op.Type == 140 {
 		go func() {
-			bgCtx := context.Background()
 			param2, err := line.ParseReactionParam2(op.Param2)
 			if err != nil {
 				lc.UserLogin.Bridge.Log.Error().Err(err).Msg("Failed to parse reaction param2")
 				return
 			}
 			if param2.Curr == nil || param2.Curr.PaidReactionType == nil {
+				lc.UserLogin.Bridge.Log.Error().Msg("No current reaction or paid reaction type found")
 				return
 			}
 
@@ -767,14 +767,14 @@ func (lc *LineClient) handleOperation(ctx context.Context, op line.Operation) {
 			}
 
 			senderID := makeUserID(op.Param3)
-			ghost, err := lc.UserLogin.Bridge.GetGhostByID(bgCtx, senderID)
+			ghost, err := lc.UserLogin.Bridge.GetGhostByID(ctx, senderID)
 			if err != nil {
 				lc.UserLogin.Bridge.Log.Error().Err(err).Msg("Failed to get ghost for reaction sender")
 				return
 			}
 
 			portalKey := networkid.PortalKey{ID: makePortalID(param2.ChatMid), Receiver: lc.UserLogin.ID}
-			portal, err := lc.UserLogin.Bridge.GetPortalByKey(bgCtx, portalKey)
+			portal, err := lc.UserLogin.Bridge.GetPortalByKey(ctx, portalKey)
 			if err != nil || portal == nil {
 				lc.UserLogin.Bridge.Log.Error().Err(err).Str("chat_mid", param2.ChatMid).Msg("Failed to get portal for reaction")
 				return
@@ -785,7 +785,7 @@ func (lc *LineClient) handleOperation(ctx context.Context, op line.Operation) {
 				return
 			}
 
-			mxc, uploadedFile, err := ghost.Intent.UploadMedia(bgCtx, "", data, "reaction.png", mimeType)
+			mxc, uploadedFile, err := ghost.Intent.UploadMedia(ctx, "", data, "reaction.png", mimeType)
 			if err != nil {
 				lc.UserLogin.Bridge.Log.Error().Err(err).Int("data_len", len(data)).Msg("Failed to upload reaction image to Matrix")
 				return
