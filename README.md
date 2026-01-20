@@ -86,7 +86,7 @@ or
 
 ## Can't log in?
 
-This bridge uses the email from your Account information. If your account is an older account, you have signed in using phone number or signed in with Google, you will not have an email set for your LINE account.
+This bridge uses the email from your Account information. If your account is an older account, you signed in using phone number or signed in with Google, you will not have an email set for your LINE account.
 
 ### How to set an email for your LINE account
 
