@@ -329,11 +329,49 @@ func (m *Manager) DecryptMessageV2(msg *line.Message) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
+	ver := 2
+	if vStr, ok := msg.ContentMetadata["e2eeVersion"]; ok && vStr == "1" {
+		ver = 1
+	}
+
+	if ver == 1 {
+		cipher, err := assembleCipherV1(msg.Chunks)
+		if err != nil {
+			return "", err
+		}
+		pt, _, err := m.runner.ChannelDecryptV1(chanID, senderKeyID, receiverKeyID, base64.StdEncoding.EncodeToString(cipher))
+		if err != nil {
+			return "", err
+		}
+		return pt, nil
+	}
+
 	pt, _, err := m.runner.ChannelDecryptV2(chanID, msg.To, msg.From, senderKeyID, receiverKeyID, msg.ContentType, base64.StdEncoding.EncodeToString(cipher))
 	if err != nil {
 		return "", err
 	}
 	return pt, nil
+}
+
+func assembleCipherV1(chunks []string) ([]byte, error) {
+	if len(chunks) < 3 {
+		return nil, fmt.Errorf("not enough chunks")
+	}
+	decode := func(s string) ([]byte, error) { return base64.StdEncoding.DecodeString(strings.TrimSpace(s)) }
+	b0, err := decode(chunks[0])
+	if err != nil {
+		return nil, err
+	}
+	b1, err := decode(chunks[1])
+	if err != nil {
+		return nil, err
+	}
+	b2, err := decode(chunks[2])
+	if err != nil {
+		return nil, err
+	}
+	return append(append(b0, b1...), b2...), nil
 }
 
 func (m *Manager) UnwrapGroupSharedKey(chatMid string, sharedKey *line.E2EEGroupSharedKey) (int, error) {

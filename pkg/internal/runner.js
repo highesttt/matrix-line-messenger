@@ -398,6 +398,21 @@ async function run() {
 					process.stdout.write(
 						JSON.stringify({ ciphertext: u8ToB64(ct) }) + "\n"
 					);
+				} else if (type === "channel_decrypt_v1") { // messages sent from ios LINE app use v1
+					const {
+						channelId,
+						ciphertext,
+					} = query;
+					const chan = getChannel(toIntStrict("channelId", channelId));
+
+					const u8Cipher = b64ToU8(ciphertext);
+					const pt = chan.decryptV1(
+						u8Cipher
+					);
+					const plaintext = new TextDecoder().decode(Uint8Array.from(pt).buffer);
+					process.stdout.write(
+						JSON.stringify({ plaintext, base64: u8ToB64(pt) }) + "\n"
+					);
 				} else if (type === "channel_decrypt_v2") {
 					const {
 						channelId,
