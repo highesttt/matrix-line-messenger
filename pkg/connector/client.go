@@ -807,7 +807,7 @@ func (lc *LineClient) handleOperation(ctx context.Context, op line.Operation) {
 					Sender:    bridgev2.EventSender{Sender: senderID},
 				},
 				TargetMessage: networkid.MessageID(op.Param1),
-				Emoji:         string(mxc), 
+				Emoji:         string(mxc),
 			})
 		}()
 	}
