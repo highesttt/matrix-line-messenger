@@ -34,6 +34,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 
 	"github.com/rs/zerolog"
 
@@ -698,7 +699,7 @@ func (lc *LineClient) pollLoop(ctx context.Context) {
 	}
 }
 
-func (lc *LineClient) handleOperation(_ context.Context, op line.Operation) {
+func (lc *LineClient) handleOperation(ctx context.Context, op line.Operation) {
 	// Type 25 = SEND_MESSAGE (Message sent by you from another device)
 	// Type 26 = RECEIVE_MESSAGE (Message received from another user)
 
@@ -726,6 +727,89 @@ func (lc *LineClient) handleOperation(_ context.Context, op line.Operation) {
 			},
 			ReadUpTo: time.UnixMilli(ts),
 		})
+	}
+
+	if op.Type == 140 {
+		go func() {
+			bgCtx := context.Background()
+			param2, err := line.ParseReactionParam2(op.Param2)
+			if err != nil {
+				lc.UserLogin.Bridge.Log.Error().Err(err).Msg("Failed to parse reaction param2")
+				return
+			}
+			if param2.Curr == nil || param2.Curr.PaidReactionType == nil {
+				return
+			}
+
+			prt := param2.Curr.PaidReactionType
+			url := fmt.Sprintf("https://stickershop.line-scdn.net/sticonshop/v1/sticon/%s/android/%s.png", prt.ProductID, prt.EmojiID)
+
+			resp, err := lc.HTTPClient.Get(url)
+			if err != nil {
+				lc.UserLogin.Bridge.Log.Error().Err(err).Str("url", url).Msg("Failed to download reaction image")
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 200 {
+				lc.UserLogin.Bridge.Log.Error().Int("status_code", resp.StatusCode).Str("url", url).Msg("Failed to download reaction image: bad status code")
+				return
+			}
+
+			data, err := io.ReadAll(resp.Body)
+			if err != nil {
+				lc.UserLogin.Bridge.Log.Error().Err(err).Msg("Failed to read reaction image body")
+				return
+			}
+
+			mimeType := resp.Header.Get("Content-Type")
+			if mimeType == "" {
+				mimeType = "image/png"
+			}
+
+			senderID := makeUserID(op.Param3)
+			ghost, err := lc.UserLogin.Bridge.GetGhostByID(bgCtx, senderID)
+			if err != nil {
+				lc.UserLogin.Bridge.Log.Error().Err(err).Msg("Failed to get ghost for reaction sender")
+				return
+			}
+
+			portalKey := networkid.PortalKey{ID: makePortalID(param2.ChatMid), Receiver: lc.UserLogin.ID}
+			portal, err := lc.UserLogin.Bridge.GetPortalByKey(bgCtx, portalKey)
+			if err != nil || portal == nil {
+				lc.UserLogin.Bridge.Log.Error().Err(err).Str("chat_mid", param2.ChatMid).Msg("Failed to get portal for reaction")
+				return
+			}
+
+			if portal.MXID == "" {
+				lc.UserLogin.Bridge.Log.Error().Msg("Portal MXID is empty, cannot upload media")
+				return
+			}
+
+			mxc, uploadedFile, err := ghost.Intent.UploadMedia(bgCtx, "", data, "reaction.png", mimeType)
+			if err != nil {
+				lc.UserLogin.Bridge.Log.Error().Err(err).Int("data_len", len(data)).Msg("Failed to upload reaction image to Matrix")
+				return
+			}
+			if mxc == "" && uploadedFile != nil && uploadedFile.URL != "" {
+				mxc = id.ContentURIString(uploadedFile.URL)
+			}
+			if mxc == "" {
+				lc.UserLogin.Bridge.Log.Error().Interface("uploaded_file", uploadedFile).Msg("UploadMedia returned empty MXC URI")
+				return
+			}
+
+			ts, _ := op.CreatedTime.Int64()
+			lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.Reaction{
+				EventMeta: simplevent.EventMeta{
+					Type:      bridgev2.RemoteEventReaction,
+					PortalKey: portalKey,
+					Timestamp: time.UnixMilli(ts),
+					Sender:    bridgev2.EventSender{Sender: senderID},
+				},
+				TargetMessage: networkid.MessageID(op.Param1),
+				Emoji:         string(mxc), 
+			})
+		}()
 	}
 
 	if op.Type == 25 {
