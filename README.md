@@ -83,3 +83,13 @@ or
 2. Navigate to `Bridges`
 3. Click on the three dots next to your LINE Bridge and select `Experimental: Add an account`
 4. Follow the instructions to log in to your LINE account.
+
+## Can't log in?
+
+This bridge uses the email from your Account information. If your account is an older account, you have signed in using phone number or signed in with Google, you will not have an email set for your LINE account.
+
+### How to set an email for your LINE account
+
+1. Open the LINE app on your mobile device.
+2. Go to `Settings` > `Account`.
+3. Tap on `Email address` and set your email address.
