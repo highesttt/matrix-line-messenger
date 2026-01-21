@@ -997,10 +997,18 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 	}
 	decryptedBody := bodyText
 
-	tsInt, _ := msg.CreatedTime.Int64()
-	ts := time.UnixMilli(tsInt)
-	if ts.IsZero() {
+	var ts time.Time
+	if tsInt, err := msg.CreatedTime.Int64(); err != nil {
+		lc.UserLogin.Bridge.Log.Warn().
+			Err(err).
+			Str("msg_id", msg.ID).
+			Msg("Failed to convert message CreatedTime to int64, using current time")
 		ts = time.Now()
+	} else {
+		ts = time.UnixMilli(tsInt)
+		if ts.IsZero() {
+			ts = time.Now()
+		}
 	}
 
 	lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.Message[line.Message]{
@@ -1017,11 +1025,11 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data line.Message) (*bridgev2.ConvertedMessage, error) {
 			replyRelatesTo := lc.resolveReplyRelatesTo(ctx, &data)
 			// Handle Images
+			client := line.NewClient(lc.AccessToken)
 			if data.ContentType == 1 { // Image
 				oid := data.ContentMetadata["OID"]
 
 				if oid != "" {
-					client := line.NewClient(lc.AccessToken)
 					imgData, err := client.DownloadOBS(oid, data.ID)
 
 					// Refresh token if we get a 401
@@ -1103,7 +1111,6 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 				}
 
 				if oid != "" {
-					client := line.NewClient(lc.AccessToken)
 					videoData, err := client.DownloadOBSWithSID(oid, data.ID, "emv")
 
 					if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err)) {
@@ -1243,7 +1250,6 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 				}
 
 				if oid != "" {
-					client := line.NewClient(lc.AccessToken)
 					fileData, err := client.DownloadOBSWithSID(oid, data.ID, "emf")
 					if err != nil {
 						lc.UserLogin.Bridge.Log.Error().
@@ -1431,29 +1437,26 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 				RelatesTo: replyRelatesTo,
 			}
 
-			if strings.Contains(unwrappedText, ".") {
-				urlRegex := regexp.MustCompile(`(https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(/[^\s]*)?`)
-				if match := urlRegex.FindString(unwrappedText); match != "" {
-					match = strings.TrimRight(match, ".,;:!?")
-					requestURL := match
-					if !strings.HasPrefix(match, "http") {
-						requestURL = "https://" + match
+			urlRegex := regexp.MustCompile(`(https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(/[^\s]*)?`)
+			if match := urlRegex.FindString(unwrappedText); match != "" {
+				match = strings.TrimRight(match, ".,;:!?")
+				requestURL := match
+				if !strings.HasPrefix(match, "http") {
+					requestURL = "https://" + match
+				}
+				if info, err := client.GetPageInfo(requestURL); err == nil {
+					preview := &event.BeeperLinkPreview{
+						MatchedURL: match,
+						LinkPreview: event.LinkPreview{
+							Title:        info.Title,
+							Description:  info.Summary,
+							CanonicalURL: info.Domain,
+						},
 					}
-					client := line.NewClient(lc.AccessToken)
-					if info, err := client.GetPageInfo(requestURL); err == nil {
-						preview := &event.BeeperLinkPreview{
-							MatchedURL: match,
-							LinkPreview: event.LinkPreview{
-								Title:        info.Title,
-								Description:  info.Summary,
-								CanonicalURL: info.Domain,
-							},
-						}
-						if info.Image != "" && info.Obs.CDN != "" {
-							preview.ImageURL = id.ContentURIString(info.Obs.CDN + info.Image)
-						}
-						content.BeeperLinkPreviews = []*event.BeeperLinkPreview{preview}
+					if info.Image != "" && info.Obs.CDN != "" {
+						preview.ImageURL = id.ContentURIString(info.Obs.CDN + info.Image)
 					}
+					content.BeeperLinkPreviews = []*event.BeeperLinkPreview{preview}
 				}
 			}
 
@@ -1499,6 +1502,8 @@ func (lc *LineClient) LogoutRemote(ctx context.Context) {}
 func (lc *LineClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
 	return &event.RoomFeatures{
 		MaxTextLength: 5000,
+		Reply:         event.CapLevelFullySupported,
+		ReadReceipts:  true,
 		File: event.FileFeatureMap{
 			event.MsgImage: {
 				MimeTypes: map[string]event.CapabilitySupportLevel{
