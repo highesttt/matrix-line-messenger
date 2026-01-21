@@ -780,6 +780,22 @@ func (lc *LineClient) handleOperation(ctx context.Context, op line.Operation) {
 		})
 	}
 
+	if op.Type == 64 || op.Type == 65 {
+		chatMid := op.Param1
+		msgID := op.Param2
+		lc.UserLogin.Bridge.Log.Info().Str("msg_id", msgID).Str("chat_mid", chatMid).Int("op_type", op.Type).Msg("Received unsend operation")
+
+		ts, _ := op.CreatedTime.Int64()
+		lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.MessageRemove{
+			EventMeta: simplevent.EventMeta{
+				Type:      bridgev2.RemoteEventMessageRemove,
+				PortalKey: networkid.PortalKey{ID: makePortalID(chatMid), Receiver: lc.UserLogin.ID},
+				Timestamp: time.UnixMilli(ts),
+			},
+			TargetMessage: networkid.MessageID(msgID),
+		})
+	}
+
 	if op.Type == 140 {
 		go func() {
 			param2, err := line.ParseReactionParam2(op.Param2)
@@ -1506,9 +1522,11 @@ func (lc *LineClient) LogoutRemote(ctx context.Context) {}
 
 func (lc *LineClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
 	return &event.RoomFeatures{
-		MaxTextLength: 5000,
-		Reply:         event.CapLevelFullySupported,
-		ReadReceipts:  true,
+		MaxTextLength:         5000,
+		Reply:                 event.CapLevelFullySupported,
+		ReadReceipts:          true,
+		Delete:                event.CapLevelPartialSupport,
+		DeleteChatForEveryone: true,
 		File: event.FileFeatureMap{
 			event.MsgImage: {
 				MimeTypes: map[string]event.CapabilitySupportLevel{
@@ -2242,6 +2260,34 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			Timestamp: time.UnixMilli(now),
 		},
 	}, nil
+}
+
+func (lc *LineClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.MatrixMessageRemove) error {
+	client := line.NewClient(lc.AccessToken)
+
+	reqSeq := int(time.Now().UnixMilli() % 1_000_000_000)
+	lc.reqSeqMu.Lock()
+	if lc.sentReqSeqs == nil {
+		lc.sentReqSeqs = make(map[int]time.Time)
+	}
+	lc.sentReqSeqs[reqSeq] = time.Now()
+	lc.reqSeqMu.Unlock()
+
+	return client.UnsendMessage(int64(reqSeq), string(msg.TargetMessage.ID))
+}
+
+func (lc *LineClient) HandleMatrixLeaveRoom(ctx context.Context, portal *bridgev2.Portal) error {
+	client := line.NewClient(lc.AccessToken)
+
+	reqSeq := int(time.Now().UnixMilli() % 1_000_000_000)
+	lc.reqSeqMu.Lock()
+	if lc.sentReqSeqs == nil {
+		lc.sentReqSeqs = make(map[int]time.Time)
+	}
+	lc.sentReqSeqs[reqSeq] = time.Now()
+	lc.reqSeqMu.Unlock()
+
+	return client.SendChatRemoved(int64(reqSeq), string(portal.ID), "0", 0)
 }
 
 var _ bridgev2.IdentifierResolvingNetworkAPI = (*LineClient)(nil)
