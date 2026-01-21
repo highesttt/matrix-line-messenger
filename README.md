@@ -29,10 +29,8 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 - [x] Media messages (images, videos, voice notes, files)
 - [x] Sticker support
 - [x] Link previews
-- [x] Message unsending/deletion\*
+- [x] Message unsending/deletion
 - [x] Leaving chats
-
-\* If the other user unsends a message via LINE Mobile, it will not have any effects on Beeper.
 
 ## How to Use
 
