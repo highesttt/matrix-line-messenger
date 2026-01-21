@@ -13,7 +13,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 > Messages sent to the LINE Bot using Beeper Desktop may appear as indefinitely sending.\
 > Use Beeper Mobile to send commands to the LINE Bot account after creating the chat with Beeper Desktop.
 
-## Roadmap
+## Features
 
 - [x] Basic messaging (encrypted text messages)
 - [x] Actual login via mail/password (instead of access token)
@@ -24,10 +24,11 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 - [x] Read receipts
 - [x] Reaction support (Receive ONLY)
 - [x] Reply support
-- [ ] Prefetch chats
+- [x] Prefetch chats
 - [x] Group chats
 - [x] Media messages (images, videos, voice notes, files)
 - [x] Sticker support
+- [x] Link previews
 
 ## How to Use
 

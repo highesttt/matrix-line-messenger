@@ -538,3 +538,43 @@ func (c *Client) constructTalkMeta(messageID string) string {
 
 	return base64.StdEncoding.EncodeToString(metaBytes)
 }
+
+func (c *Client) GetPageInfo(url string) (*PageInfoResult, error) {
+	apiURL := "https://legy-jp.line-apps.com/sc/api/v2/pageinfo/get"
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	q := req.URL.Query()
+	q.Add("url", url)
+	q.Add("caller", "LINE_CHROME")
+	req.URL.RawQuery = q.Encode()
+
+	req.Header.Set("User-Agent", UserAgent)
+	if c.AccessToken != "" {
+		req.Header.Set("x-line-access", c.AccessToken)
+		req.Header.Set("Cookie", fmt.Sprintf("lct=%s", c.AccessToken))
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("pageinfo request failed: %d", resp.StatusCode)
+	}
+
+	var wrapper PageInfoResponse
+	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
+		return nil, err
+	}
+
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("pageinfo API error: %s", wrapper.Message)
+	}
+
+	return &wrapper.Result, nil
+}
