@@ -9,8 +9,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"image"
 	_ "image/gif"
 	"image/jpeg"
@@ -1388,6 +1390,9 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 						if err != nil {
 							lc.UserLogin.Bridge.Log.Warn().Err(err).Str("stk_id", stkID).Msg("Failed to read sticker body")
 						} else {
+							if strings.Contains(stkOpt, "A") {
+								stkData = forceAPNGLoop(stkData)
+							}
 							mxc, file, err := intent.UploadMedia(ctx, portal.MXID, stkData, "sticker.png", "image/png")
 							if err != nil {
 								lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload sticker to Matrix")
@@ -2270,4 +2275,35 @@ func (lc *LineClient) GetAvatar(ctx context.Context, id networkid.AvatarID) ([]b
 	}
 	defer resp.Body.Close()
 	return io.ReadAll(resp.Body)
+}
+
+func forceAPNGLoop(data []byte) []byte {
+	if len(data) < 8 || string(data[:8]) != "\x89PNG\r\n\x1a\n" {
+		return data
+	}
+
+	offset := 8
+	for offset < len(data) {
+		if offset+8 > len(data) {
+			break
+		}
+		length := binary.BigEndian.Uint32(data[offset : offset+4])
+		chunkType := string(data[offset+4 : offset+8])
+
+		if chunkType == "acTL" {
+			if length >= 8 && offset+8+8 <= len(data) {
+				binary.BigEndian.PutUint32(data[offset+8+4:offset+8+8], 0)
+
+				crc := crc32.NewIEEE()
+				crc.Write(data[offset+4 : offset+8+int(length)])
+				newCRC := crc.Sum32()
+
+				binary.BigEndian.PutUint32(data[offset+8+int(length):offset+8+int(length)+4], newCRC)
+			}
+			break
+		}
+
+		offset += 4 + 4 + int(length) + 4
+	}
+	return data
 }
