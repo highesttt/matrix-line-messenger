@@ -468,3 +468,13 @@ func (c *Client) GetRecentMessagesV2(chatMid string, limit int) ([]*Message, err
 	}
 	return wrapper.Data, nil
 }
+
+func (c *Client) UnsendMessage(reqSeq int64, messageID string) error {
+	_, err := c.callRPC("TalkService", "unsendMessage", reqSeq, messageID)
+	return err
+}
+
+func (c *Client) SendChatRemoved(reqSeq int64, chatMid, lastReadMessageId string, lastReadMessageTime int64) error {
+	_, err := c.callRPC("TalkService", "sendChatRemoved", reqSeq, chatMid, lastReadMessageId, lastReadMessageTime)
+	return err
+}
