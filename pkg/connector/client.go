@@ -636,7 +636,13 @@ func (lc *LineClient) chatToChatInfo(chat *line.Chat) *bridgev2.ChatInfo {
 		name = lc.generateNameFromMembers(chat.Extra.GroupExtra.MemberMids)
 	}
 
+	ct := database.RoomTypeGroupDM
+	if chat.Extra.GroupExtra == nil {
+		ct = database.RoomTypeDM
+	}
+
 	return &bridgev2.ChatInfo{
+		Type:    &ct,
 		Name:    &name,
 		Avatar:  avatar,
 		Members: &bridgev2.ChatMemberList{IsFull: true, Members: members},
