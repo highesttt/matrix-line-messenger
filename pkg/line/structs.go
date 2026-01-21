@@ -247,3 +247,49 @@ type AcquireEncryptedAccessTokenResponse struct {
 	Message string `json:"message"`
 	Data    string `json:"data"` // Format: "expirySeconds\x1eToken"
 }
+
+type MessageBoxesOptions struct {
+	ActiveOnly                     bool `json:"activeOnly"`
+	UnreadOnly                     bool `json:"unreadOnly"`
+	MessageBoxCountLimit           int  `json:"messageBoxCountLimit"`
+	WithUnreadCount                bool `json:"withUnreadCount"`
+	LastMessagesPerMessageBoxCount int  `json:"lastMessagesPerMessageBoxCount"`
+}
+
+type MessageBoxesResponse struct {
+	MessageBoxes []MessageBox `json:"messageBoxes"`
+	HasNext      bool         `json:"hasNext"`
+}
+
+type MessageBox struct {
+	ID                     string            `json:"id"`
+	MidType                int               `json:"midType"`
+	LastDeliveredMessageID *MessageIDWrapper `json:"lastDeliveredMessageId"`
+	LastSeenMessageID      string            `json:"lastSeenMessageId"`
+	UnreadCount            json.Number       `json:"unreadCount"`
+	LastMessages           []Message         `json:"lastMessages"`
+}
+
+type MessageIDWrapper struct {
+	DeliveredTime json.Number `json:"deliveredTime"`
+	MessageID     string      `json:"messageId"`
+}
+
+type PageInfoResponse struct {
+	Result  PageInfoResult `json:"result"`
+	Code    int            `json:"code"`
+	Message string         `json:"message"`
+}
+
+type PageInfoResult struct {
+	URL     string  `json:"url"`
+	Domain  string  `json:"domain"`
+	Title   string  `json:"title"`
+	Summary string  `json:"summary"`
+	Image   string  `json:"image"`
+	Obs     ObsInfo `json:"obs"`
+}
+
+type ObsInfo struct {
+	CDN string `json:"cdn"`
+}

@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -473,7 +474,55 @@ func (lc *LineClient) Connect(ctx context.Context) {
 	}
 
 	go lc.syncChats(ctx)
+	go lc.prefetchMessages(ctx)
 	go lc.pollLoop(ctx)
+}
+
+func (lc *LineClient) prefetchMessages(ctx context.Context) {
+	client := line.NewClient(lc.AccessToken)
+	opts := line.MessageBoxesOptions{
+		ActiveOnly:                     true,
+		MessageBoxCountLimit:           100,
+		WithUnreadCount:                true,
+		LastMessagesPerMessageBoxCount: 0,
+	}
+
+	res, err := client.GetMessageBoxes(opts)
+	if err != nil && lc.isRefreshRequired(err) {
+		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+			client = line.NewClient(lc.AccessToken)
+			res, err = client.GetMessageBoxes(opts)
+		}
+	}
+	if err != nil {
+		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to prefetch message boxes")
+		return
+	}
+
+	for _, box := range res.MessageBoxes {
+		// Fetch recent messages for all active chats to ensure history is populated
+		msgs, err := client.GetRecentMessagesV2(box.ID, 50)
+		if err != nil {
+			lc.UserLogin.Bridge.Log.Warn().Err(err).Str("chat_mid", box.ID).Msg("Failed to fetch recent messages")
+			continue
+		}
+
+		// Reverse messages to process oldest first
+		for i := len(msgs) - 1; i >= 0; i-- {
+			msg := msgs[i]
+
+			existing, err := lc.UserLogin.Bridge.DB.Message.GetPartByID(ctx, lc.UserLogin.ID, networkid.MessageID(msg.ID), "")
+			if err == nil && existing != nil {
+				continue
+			}
+
+			opType := 26
+			if msg.From == lc.Mid {
+				opType = 25
+			}
+			lc.queueIncomingMessage(msg, opType)
+		}
+	}
 }
 
 func (lc *LineClient) syncChats(ctx context.Context) {
@@ -948,6 +997,12 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 	}
 	decryptedBody := bodyText
 
+	tsInt, _ := msg.CreatedTime.Int64()
+	ts := time.UnixMilli(tsInt)
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+
 	lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.Message[line.Message]{
 		EventMeta: simplevent.EventMeta{
 			Type:         bridgev2.RemoteEventMessage,
@@ -955,7 +1010,7 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 			PortalKey:    portalKey,
 			CreatePortal: true,
 			Sender:       bridgev2.EventSender{Sender: senderID, IsFromMe: opType == 25},
-			Timestamp:    time.Now(),
+			Timestamp:    ts,
 		},
 		Data: *msg,
 		ID:   networkid.MessageID(msg.ID),
@@ -1370,15 +1425,43 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 			}
 
 			// Default to Text
+			content := &event.MessageEventContent{
+				MsgType:   event.MsgText,
+				Body:      unwrappedText,
+				RelatesTo: replyRelatesTo,
+			}
+
+			if strings.Contains(unwrappedText, ".") {
+				urlRegex := regexp.MustCompile(`(https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(/[^\s]*)?`)
+				if match := urlRegex.FindString(unwrappedText); match != "" {
+					match = strings.TrimRight(match, ".,;:!?")
+					requestURL := match
+					if !strings.HasPrefix(match, "http") {
+						requestURL = "https://" + match
+					}
+					client := line.NewClient(lc.AccessToken)
+					if info, err := client.GetPageInfo(requestURL); err == nil {
+						preview := &event.BeeperLinkPreview{
+							MatchedURL: match,
+							LinkPreview: event.LinkPreview{
+								Title:        info.Title,
+								Description:  info.Summary,
+								CanonicalURL: info.Domain,
+							},
+						}
+						if info.Image != "" && info.Obs.CDN != "" {
+							preview.ImageURL = id.ContentURIString(info.Obs.CDN + info.Image)
+						}
+						content.BeeperLinkPreviews = []*event.BeeperLinkPreview{preview}
+					}
+				}
+			}
+
 			return &bridgev2.ConvertedMessage{
 				Parts: []*bridgev2.ConvertedMessagePart{
 					{
-						Type: event.EventMessage,
-						Content: &event.MessageEventContent{
-							MsgType:   event.MsgText,
-							Body:      unwrappedText,
-							RelatesTo: replyRelatesTo,
-						},
+						Type:    event.EventMessage,
+						Content: content,
 					},
 				},
 			}, nil

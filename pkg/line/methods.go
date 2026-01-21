@@ -430,3 +430,41 @@ func (c *Client) AcquireEncryptedAccessToken() (string, error) {
 
 	return parts[1], nil
 }
+
+func (c *Client) GetMessageBoxes(options MessageBoxesOptions) (*MessageBoxesResponse, error) {
+	resp, err := c.callRPC("TalkService", "getMessageBoxes", options, 2)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int                  `json:"code"`
+		Message string               `json:"message"`
+		Data    MessageBoxesResponse `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("getMessageBoxes failed: %s", wrapper.Message)
+	}
+	return &wrapper.Data, nil
+}
+
+func (c *Client) GetRecentMessagesV2(chatMid string, limit int) ([]*Message, error) {
+	resp, err := c.callRPC("TalkService", "getRecentMessagesV2", chatMid, limit)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int        `json:"code"`
+		Message string     `json:"message"`
+		Data    []*Message `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("getRecentMessagesV2 failed: %s", wrapper.Message)
+	}
+	return wrapper.Data, nil
+}
