@@ -117,7 +117,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     cd ..
 
     # Build the bridge. Make sure to have the olm .dll file(s) in the root of the project.
-    ./build_windows.sh
+    ./build-windows.sh
     cd data
     ../matrix-line.exe
     ```
