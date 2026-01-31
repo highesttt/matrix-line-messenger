@@ -52,6 +52,18 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     ```bash
     git clone https://github.com/beeper/bridge-manager.git
     cd bridge-manager
+
+    # For windows users only:
+    # in cmd/bbctl/run.go, remove the following lines since msys2 is still seen as linux but Windows doesn't support Setpgid:
+
+    # if runtime.GOOS == "linux" {
+    #     cmd.SysProcAttr = &syscall.SysProcAttr{
+    #         // Don't pass through signals to the bridge, we'll send a sigterm when we want to stop it.
+    #         // Causes weird issues on macOS, so limited to Linux.
+    #         Setpgid: true,
+    #     }
+    # }
+
     ./build.sh
     ```
 
