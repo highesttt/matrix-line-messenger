@@ -112,9 +112,11 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     # Clone and build olm if not already done
     git clone https://gitlab.matrix.org/matrix-org/olm.git
     cd olm
-    cmake . -Bbuild
+    cmake -Bbuild -G "Unix Makefiles" -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ -DCMAKE_INSTALL_PREFIX=/mingw64
     cmake --build build
+    cmake --install build
     cd ..
+    # Move the .dll and .dll.a files in the matrix-line root directory
 
     # Build the bridge. Make sure to have the olm .dll file(s) in the root of the project.
     ./build-windows.sh
