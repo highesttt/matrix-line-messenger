@@ -15,19 +15,13 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
 ## Features
 
-- [x] Basic messaging (encrypted text messages)
-- [x] Actual login via mail/password (instead of access token)
-- [x] Get own profile details (ID & Name)
-- [x] Decrypt messages
-- [x] Decrypt usernames
-- [x] Sending messages
+- [x] Messages (Text, Images, Videos, voice notes and any other kind of files)
 - [x] Read receipts
 - [x] Reaction support (Receive ONLY)
-- [x] Reply support
-- [x] Prefetch chats
+- [x] Replies
+- [x] Prefetch missed chats upon starting the bridge
 - [x] Group chats
-- [x] Media messages (images, videos, voice notes, files)
-- [x] Sticker support
+- [x] Sticker retrieval support
 - [x] Link previews
 - [x] Message unsending/deletion
 - [x] Leaving chats
