@@ -2,8 +2,10 @@ package connector
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -157,16 +159,64 @@ func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]
 	}
 
 	if ll.Email == "" || ll.Password == "" {
-		return nil, fmt.Errorf("email and password are required")
+		return ll.loginErrorStep("Email and password are required"), nil
 	}
 
 	client := line.NewClient("")
 	res, err := client.Login(ll.Email, ll.Password)
 	if err != nil {
-		return nil, fmt.Errorf("login failed: %w", err)
+		reason := loginErrorReason(err)
+		if reason == "" {
+			reason = fmt.Sprintf("Login failed: %v", err)
+		}
+		return ll.loginErrorStep(reason), nil
 	}
 
 	return ll.handleLoginResponse(ctx, res)
+}
+
+func (ll *LineEmailLogin) loginErrorStep(message string) *bridgev2.LoginStep {
+	instructions := fmt.Sprintf("Error when logging in: %s", message)
+	return &bridgev2.LoginStep{
+		Type:         bridgev2.LoginStepTypeUserInput,
+		StepID:       "dev.highest.matrix.line.enter_creds",
+		Instructions: instructions,
+		UserInputParams: &bridgev2.LoginUserInputParams{
+			Fields: []bridgev2.LoginInputDataField{
+				{
+					Type: bridgev2.LoginInputFieldTypeUsername,
+					ID:   "email",
+					Name: "Email",
+				},
+				{
+					Type: bridgev2.LoginInputFieldTypePassword,
+					ID:   "password",
+					Name: "Password",
+				},
+			},
+		},
+	}
+}
+
+func loginErrorReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	start := strings.Index(msg, "{")
+	end := strings.LastIndex(msg, "}")
+	if start == -1 || end == -1 || end <= start {
+		return ""
+	}
+	var payload struct {
+		Data struct {
+			Reason string `json:"reason"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(msg[start:end+1]), &payload); err != nil {
+		return ""
+	}
+	return payload.Data.Reason
 }
 
 func (ll *LineEmailLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {

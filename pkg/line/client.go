@@ -72,6 +72,9 @@ func (c *Client) Login(email, pass string) (*LoginResult, error) {
 	if err := json.Unmarshal(respBytes, &wrapper); err != nil {
 		return nil, fmt.Errorf("failed to parse login response: %w", err)
 	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("loginV2 failed: %s (code %d)", wrapper.Message, wrapper.Code)
+	}
 	res := wrapper.Data
 	if res.PinCode != "" {
 		res.Pin = res.PinCode
