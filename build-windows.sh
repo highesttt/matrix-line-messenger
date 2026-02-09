@@ -16,7 +16,7 @@ sed -i '/parsed.Path = filepath.Join/c\	// Windows fix: Don'"'"'t use filepath.J
 echo "Building matrix-line for Windows..."
 MAUTRIX_VERSION=$(cat go.mod | grep 'maunium.net/go/mautrix ' | awk '{ print $2 }' | head -n1)
 GO_LDFLAGS="-s -w -X main.Tag=$(git describe --exact-match --tags 2>/dev/null) -X main.Commit=$(git rev-parse HEAD) -X 'main.BuildTime=`date -Iseconds`' -X 'maunium.net/go/mautrix.GoModVersion=$MAUTRIX_VERSION'"
-CC=x86_64-w64-mingw32-gcc go build -mod=vendor -ldflags="$GO_LDFLAGS" -o matrix-line.exe ./cmd/matrix-line "$@"
+CGO_LDFLAGS='-L .' CC=x86_64-w64-mingw32-gcc go build -mod=vendor -ldflags="$GO_LDFLAGS" -o matrix-line.exe ./cmd/matrix-line "$@"
 
 if [ $? -eq 0 ]; then
     echo ""
