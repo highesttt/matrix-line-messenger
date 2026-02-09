@@ -693,6 +693,21 @@ func (lc *LineClient) pollLoop(ctx context.Context) {
 	client := line.NewClient(lc.AccessToken)
 
 	lc.UserLogin.Bridge.Log.Info().Msg("Starting LINE SSE loop...")
+	rev, err := client.GetLastOpRevision()
+	if err != nil && lc.isRefreshRequired(err) {
+		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+			client = line.NewClient(lc.AccessToken)
+			rev, err = client.GetLastOpRevision()
+		} else {
+			lc.UserLogin.Bridge.Log.Warn().Err(errRefresh).Msg("Failed to refresh token for getLastOpRevision")
+		}
+	}
+	if err != nil {
+		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to get last op revision")
+	} else {
+		localRev = rev
+		lc.UserLogin.Bridge.Log.Info().Int64("local_rev", localRev).Msg("Seeded local revision from getLastOpRevision")
+	}
 
 	handler := func(eventType, data string) {
 		// handle keep alives
@@ -715,6 +730,8 @@ func (lc *LineClient) pollLoop(ctx context.Context) {
 
 				}
 			}
+			go lc.syncChats(ctx)
+			go lc.prefetchMessages(ctx)
 			return
 		}
 

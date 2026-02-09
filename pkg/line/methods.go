@@ -9,8 +9,12 @@ import (
 
 // LoginV2 performs the loginV2 RPC call to authenticate a user
 func (c *Client) LoginV2(email, password, certificate, secret string) ([]byte, error) {
+	return c.LoginV2WithType(2, email, password, certificate, secret)
+}
+
+func (c *Client) LoginV2WithType(loginType int, email, password, certificate, secret string) ([]byte, error) {
 	req := LoginRequest{
-		Type:             2,
+		Type:             loginType,
 		IdentityProvider: 1,
 		Identifier:       email,
 		Password:         password,
@@ -399,6 +403,32 @@ func (c *Client) GetChats(mids []string, withMembers, withInvitees bool) (*GetCh
 		return nil, fmt.Errorf("getChats failed: %s", wrapper.Message)
 	}
 	return &wrapper.Data, nil
+}
+
+func (c *Client) GetLastOpRevision() (int64, error) {
+	resp, err := c.callRPC("TalkService", "getLastOpRevision")
+	if err != nil {
+		return 0, err
+	}
+	var wrapper struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    string `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return 0, err
+	}
+	if wrapper.Code != 0 {
+		return 0, fmt.Errorf("getLastOpRevision failed: %s", wrapper.Message)
+	}
+	if wrapper.Data == "" {
+		return 0, fmt.Errorf("getLastOpRevision returned empty data")
+	}
+	rev, err := strconv.ParseInt(wrapper.Data, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("getLastOpRevision invalid data: %w", err)
+	}
+	return rev, nil
 }
 
 // this token is used to encrypt images, videos, and files uploaded to LINE's OBS storage
