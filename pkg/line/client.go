@@ -57,6 +57,9 @@ func (c *Client) Login(email, pass string) (*LoginResult, error) {
 	// 4. LoginV2
 	// Identifier is KeyName when using RSA
 	respBytes, err := c.LoginV2(rsaKey.KeyName, encryptedPass, "", secretRes.Secret)
+	if err != nil && isLoginNotSupported(err) {
+		respBytes, err = c.LoginV2WithType(0, rsaKey.KeyName, encryptedPass, "", "")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("login failed: %w", err)
 	}
@@ -80,6 +83,14 @@ func (c *Client) Login(email, pass string) (*LoginResult, error) {
 		c.AccessToken = res.AuthToken
 	}
 	return &res, nil
+}
+
+func isLoginNotSupported(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "\"code\":89") || strings.Contains(msg, "not supported")
 }
 
 func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
