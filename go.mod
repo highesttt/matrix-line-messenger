@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/rs/zerolog v1.34.0
+	github.com/u2takey/ffmpeg-go v0.5.0
 	go.mau.fi/util v0.9.3
 	golang.org/x/crypto v0.44.0
 	golang.org/x/image v0.23.0
@@ -32,7 +33,6 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	github.com/u2takey/ffmpeg-go v0.5.0 // indirect
 	github.com/u2takey/go-utils v0.3.1 // indirect
 	github.com/yuin/goldmark v1.7.13 // indirect
 	go.mau.fi/zeroconfig v0.2.0 // indirect

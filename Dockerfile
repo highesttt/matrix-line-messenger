@@ -17,7 +17,7 @@ FROM ${DOCKER_HUB}/alpine:3.22
 ENV UID=1337 \
     GID=1337
 
-RUN apk add --no-cache ffmpeg su-exec ca-certificates bash jq curl yq-go olm nodejs
+RUN apk add --no-cache ffmpeg su-exec ca-certificates bash jq curl yq-go olm
 
 COPY --from=builder /build/matrix-line /usr/bin/matrix-line
 COPY ./docker-run.sh /docker-run.sh
