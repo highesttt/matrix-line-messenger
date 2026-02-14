@@ -12,5 +12,20 @@
 
 /test
 
+# Libs
 *.dll
+*.a
 /vendor
+
+# Test files
+*.txt
+*.json
+
+# Executables
+*.exe
+
+# Internal Test files
+*_test.go
+
+# internal tools
+/tools

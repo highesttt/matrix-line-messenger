@@ -1,59 +1,56 @@
 package line
 
 import (
-	"bufio"
-	"context"
-	"embed"
-	"encoding/json"
+	"crypto/aes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"sync"
+
+	"github.com/highesttt/matrix-line-messenger/pkg/ltsm"
 )
 
-//go:embed internal/*
-var internalAssets embed.FS
-
 type Runner struct {
-	ctx      context.Context
-	jsPath   string
-	wasmPath string
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	stdout   io.ReadCloser
-	sigCh    chan string
-	secCh    chan *SecretResult
-	respCh   chan map[string]json.RawMessage
-	errch    chan error
-	wg       sync.WaitGroup
-	mu       sync.Mutex
-}
+	rt            *ltsm.Runtime
+	token         string
+	clientVersion string
+	skPtr         uint32         // SecureKey from loadToken
+	storageKey    uint32         // AesKey ptr (after StorageInit)
+	loginCurveKey uint32         // Curve25519Key ptr (after GenerateE2EESecret)
+	keyStore      map[int]uint32 // internal ID -> E2EEKey ptr
+	channelStore  map[int]uint32 // internal ID -> E2EEChannel ptr
+	nextID        int
+	mu            sync.Mutex
 
-type CommandRequest struct {
-	Type              string `json:"type"`
-	ReqPath           string `json:"reqPath"`
-	Body              string `json:"body"`
-	AccessToken       string `json:"accessToken,omitempty"`
-	ServerPublicKey   string `json:"serverPublicKey,omitempty"`
-	EncryptedKeyChain string `json:"encryptedKeyChain,omitempty"`
-}
-
-type CommandResponse struct {
-	Signature    string `json:"signature,omitempty"`
-	Secret       string `json:"secret,omitempty"`
-	Pin          string `json:"pin,omitempty"`
-	PublicKeyHex string `json:"publicKeyHex,omitempty"`
-	Hash         string `json:"hash,omitempty"`
-	Error        string `json:"error,omitempty"`
+	// Pure Go channels for encrypt/decrypt when raw key material is available.
+	// Currently populated when a Go-generated key (with known private key) is
+	// used to create a channel. WASM-unwrapped keys (from key chain) do NOT
+	// have raw private keys because of SKB (white-box crypto).
+	goKeys     map[int]*goKeyEntry   // internal ID -> raw key material
+	goChannels map[int]*ltsm.Channel // internal ID -> pure Go channel
 }
 
 type SecretResult struct {
 	Secret       string `json:"secret"`
 	Pin          string `json:"pin"`
 	PublicKeyHex string `json:"publicKeyHex"`
-	Hash         string `json:"hash"`
+}
+
+type UnwrappedKey struct {
+	KeyID    int    `json:"keyId"`
+	Exported string `json:"exported"`
+	Version  int    `json:"version"`
+	RawKeyID int    `json:"rawKeyId"`
+}
+
+// goKeyEntry holds raw Curve25519 key material for pure Go crypto.
+type goKeyEntry struct {
+	privKey []byte // raw 32-byte private key (nil if not available)
+	pubKey  []byte // raw 32-byte public key
 }
 
 var (
@@ -64,453 +61,616 @@ var (
 
 func GetRunner() (*Runner, error) {
 	runnerOnce.Do(func() {
-		dir, err := setupTempDir()
+		token := os.Getenv("SECURE_KEY")
+		if token == "" {
+			token = "wODdrvWqmdP4Zliay-iF3cz3KZcK0ekrial868apg06TXeCo7A1hIQO0ESElHg6D"
+		}
+		clientVersion := os.Getenv("CLIENT_VERSION")
+		if clientVersion == "" {
+			clientVersion = "3.7.1"
+		}
+
+		rt, err := ltsm.NewRuntime()
 		if err != nil {
-			runnerErr = err
+			runnerErr = fmt.Errorf("failed to initialize LTSM runtime: %w", err)
 			return
 		}
-		globalRunner = NewRunner(context.Background(), filepath.Join(dir, "runner.js"), filepath.Join(dir, "ltsm.wasm"))
-		if err := globalRunner.start(); err != nil {
-			runnerErr = err
+
+		skPtr, err := rt.SecureKeyLoadToken(token)
+		if err != nil {
+			rt.Close()
+			runnerErr = fmt.Errorf("failed to load secure key: %w", err)
 			return
 		}
-		go globalRunner.run()
+
+		globalRunner = &Runner{
+			rt:            rt,
+			token:         token,
+			clientVersion: clientVersion,
+			skPtr:         skPtr,
+			keyStore:      make(map[int]uint32),
+			channelStore:  make(map[int]uint32),
+			nextID:        1,
+			goKeys:        make(map[int]*goKeyEntry),
+			goChannels:    make(map[int]*ltsm.Channel),
+		}
 	})
 	return globalRunner, runnerErr
 }
 
-func setupTempDir() (string, error) {
-	setupDir := filepath.Join(os.TempDir(), "hmac_runner")
-	if err := os.MkdirAll(setupDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create temp dir: %w", err)
-	}
-
-	pkgJson := filepath.Join(setupDir, "package.json")
-	if err := os.WriteFile(pkgJson, []byte(`{"type": "module"}`), 0644); err != nil {
-		return "", fmt.Errorf("failed to write package.json: %w", err)
-	}
-
-	files := []string{"internal/runner.js", "internal/ltsm.wasm", "internal/wasm-wrapper.js"}
-	for _, file := range files {
-		target := filepath.Join(setupDir, filepath.Base(file))
-		data, err := internalAssets.ReadFile(file)
-		if err != nil {
-			return "", fmt.Errorf("failed to read embedded file %s: %w", file, err)
-		}
-		err = os.WriteFile(target, data, 0644)
-		if err != nil {
-			return "", fmt.Errorf("failed to write temp file %s: %w", target, err)
-		}
-	}
-	return setupDir, nil
+func (r *Runner) putKey(ptr uint32) int {
+	id := r.nextID
+	r.nextID++
+	r.keyStore[id] = ptr
+	return id
 }
 
-func NewRunner(ctx context.Context, jsPath, wasmPath string) *Runner {
-	return &Runner{
-		ctx:      ctx,
-		jsPath:   jsPath,
-		wasmPath: wasmPath,
-		sigCh:    make(chan string),
-		secCh:    make(chan *SecretResult),
-		respCh:   make(chan map[string]json.RawMessage),
-		errch:    make(chan error),
+func (r *Runner) getKey(id int) (uint32, error) {
+	ptr, ok := r.keyStore[id]
+	if !ok {
+		return 0, fmt.Errorf("unknown key: %d", id)
 	}
+	return ptr, nil
 }
 
-func (r *Runner) run() error {
-	scanner := bufio.NewScanner(r.stdout)
-
-	r.wg.Add(1)
-	go func() {
-		defer r.wg.Done()
-		for scanner.Scan() {
-			line := scanner.Text()
-			var raw map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(line), &raw); err != nil {
-				continue
-			}
-
-			if errVal, ok := raw["error"]; ok {
-				r.errch <- fmt.Errorf("runner error: %s", string(errVal))
-				continue
-			}
-
-			if sigVal, ok := raw["signature"]; ok {
-				var sig string
-				_ = json.Unmarshal(sigVal, &sig)
-				r.sigCh <- sig
-				continue
-			}
-
-			if raw["secret"] != nil || raw["pin"] != nil || raw["publicKeyHex"] != nil || raw["hash"] != nil {
-				var res CommandResponse
-				_ = json.Unmarshal([]byte(line), &res)
-				r.secCh <- &SecretResult{
-					Secret:       res.Secret,
-					Pin:          res.Pin,
-					PublicKeyHex: res.PublicKeyHex,
-					Hash:         res.Hash,
-				}
-				continue
-			}
-
-			r.respCh <- raw
-		}
-	}()
-
-	return nil
+func (r *Runner) putChannel(ptr uint32) int {
+	id := r.nextID
+	r.nextID++
+	r.channelStore[id] = ptr
+	return id
 }
 
-func (r *Runner) start() error {
-	var err error
-	r.cmd = exec.CommandContext(r.ctx, "node", r.jsPath, r.wasmPath)
-	r.stdin, err = r.cmd.StdinPipe()
-	if err != nil {
-		return err
+func (r *Runner) getChannel(id int) (uint32, error) {
+	ptr, ok := r.channelStore[id]
+	if !ok {
+		return 0, fmt.Errorf("unknown channel: %d", id)
 	}
-	r.stdout, err = r.cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	// Capture stderr for debugging
-	r.cmd.Stderr = os.Stderr
-
-	return r.cmd.Start()
+	return ptr, nil
 }
 
 func (r *Runner) GetSignature(reqPath, body, accessToken string) (string, error) {
+	if reqPath == "" {
+		reqPath = "/"
+	} else if reqPath[0] != '/' {
+		reqPath = "/" + reqPath
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	req := CommandRequest{
-		Type:        "sign",
-		ReqPath:     reqPath,
-		Body:        body,
-		AccessToken: accessToken,
-	}
-	reqBytes, err := json.Marshal(req)
+	sig, err := r.rt.Sign(r.token, r.clientVersion, accessToken, reqPath, body)
 	if err != nil {
 		return "", err
 	}
-
-	_, err = r.stdin.Write(append(reqBytes, '\n'))
-	if err != nil {
-		return "", err
+	if sig == "" {
+		return "", fmt.Errorf("runner returned empty signature")
 	}
-
-	select {
-	case sig := <-r.sigCh:
-		return sig, nil
-	case err := <-r.errch:
-		return "", err
-	}
+	return sig, nil
 }
 
-func (r *Runner) call(rawReq any) (map[string]json.RawMessage, error) {
+// DebugExportDerivedSigningKey returns the derived SecureKey export blob used for
+// signing. Disabled unless LTSM_ENABLE_DEBUG_EXPORT=1 is set.
+func (r *Runner) DebugExportDerivedSigningKey(accessToken string) (string, error) {
+	if os.Getenv("LTSM_ENABLE_DEBUG_EXPORT") != "1" {
+		return "", fmt.Errorf("runner error: debug export disabled")
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	reqBytes, err := json.Marshal(rawReq)
+	cvHash := sha256.Sum256([]byte(r.clientVersion))
+	atHash := sha256.Sum256([]byte(accessToken))
+
+	dkPtr, err := r.rt.SecureKeyDeriveKey(r.skPtr, cvHash[:], atHash[:])
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
-	if _, err = r.stdin.Write(append(reqBytes, '\n')); err != nil {
-		return nil, err
-	}
+	// Mark the derived key as exportable by setting the C++ flag at ptr+16
+	r.rt.MarkSecureKeyExportable(dkPtr)
 
-	select {
-	case resp := <-r.respCh:
-		return resp, nil
-	case err := <-r.errch:
-		return nil, err
+	exported, err := r.rt.SecureKeyExportKey(dkPtr)
+	if err != nil {
+		return "", err
 	}
+	return base64.StdEncoding.EncodeToString(exported), nil
 }
 
-/*
-The following methods are related to the storage and key management functionalities
-provided by the runner for E2EE operations
-*/
-
-// initializes the storage key using getEncryptedIdentityV3 response fields
+// StorageInit initializes the storage key using getEncryptedIdentityV3 response fields.
 func (r *Runner) StorageInit(wrappedNonce, kdf1, kdf2 string) error {
-	_, err := r.call(map[string]any{
-		"type":          "storage_init",
-		"wrappedNonce":  wrappedNonce,
-		"kdfParameter1": kdf1,
-		"kdfParameter2": kdf2,
-	})
-	return err
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	nonceBytes, err := base64.StdEncoding.DecodeString(wrappedNonce)
+	if err != nil {
+		return fmt.Errorf("invalid wrappedNonce: %w", err)
+	}
+	kdf1Bytes, err := base64.StdEncoding.DecodeString(kdf1)
+	if err != nil {
+		return fmt.Errorf("invalid kdfParameter1: %w", err)
+	}
+	kdf2Bytes, err := base64.StdEncoding.DecodeString(kdf2)
+	if err != nil {
+		return fmt.Errorf("invalid kdfParameter2: %w", err)
+	}
+
+	unwrappedPtr, err := r.rt.SecureKeyUnwrapV3(nonceBytes, kdf1Bytes, kdf2Bytes)
+	if err != nil {
+		return err
+	}
+
+	aesPtr, err := r.rt.AesKeyNew(unwrappedPtr)
+	if err != nil {
+		return err
+	}
+
+	r.storageKey = aesPtr
+	return nil
 }
 
-// decrypts lcs_secure blobs with the initialized storage key
+// StorageDecrypt decrypts lcs_secure blobs with the initialized storage key.
 func (r *Runner) StorageDecrypt(ciphertext string) (string, error) {
-	resp, err := r.call(map[string]any{
-		"type":       "storage_decrypt",
-		"ciphertext": ciphertext,
-	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.storageKey == 0 {
+		return "", fmt.Errorf("storage key not initialized")
+	}
+
+	ctBytes, err := base64.StdEncoding.DecodeString(ciphertext)
+	if err != nil {
+		return "", fmt.Errorf("invalid ciphertext: %w", err)
+	}
+
+	ptBytes, err := r.rt.AesKeyDecrypt(r.storageKey, ctBytes)
 	if err != nil {
 		return "", err
 	}
-	var plaintext string
-	if v, ok := resp["plaintext"]; ok {
-		_ = json.Unmarshal(v, &plaintext)
-	}
-	return plaintext, nil
+
+	return string(ptBytes), nil
 }
 
-// encrypts plaintext with the initialized storage key
+// StorageEncrypt encrypts plaintext with the initialized storage key.
 func (r *Runner) StorageEncrypt(plaintext string) (string, error) {
-	resp, err := r.call(map[string]any{
-		"type":      "storage_encrypt",
-		"plaintext": plaintext,
-	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.storageKey == 0 {
+		return "", fmt.Errorf("storage key not initialized")
+	}
+
+	ctBytes, err := r.rt.AesKeyEncrypt(r.storageKey, []byte(plaintext))
 	if err != nil {
 		return "", err
 	}
-	var ct string
-	if v, ok := resp["ciphertext"]; ok {
-		_ = json.Unmarshal(v, &ct)
-	}
-	return ct, nil
+
+	return base64.StdEncoding.EncodeToString(ctBytes), nil
 }
 
-// unwraps the encrypted key chain from LF1 using the login curve key
+// LoginUnwrapKeyChain unwraps the encrypted key chain from LF1 using the login curve key.
 func (r *Runner) LoginUnwrapKeyChain(serverPubB64, encryptedKeyChainB64 string) ([]UnwrappedKey, error) {
-	resp, err := r.call(map[string]any{
-		"type":              "login_unwrap_keychain",
-		"serverPublicKey":   serverPubB64,
-		"encryptedKeyChain": encryptedKeyChainB64,
-	})
+	normalizedServerPub, err := normalizeServerPublicKeyB64(serverPubB64)
 	if err != nil {
 		return nil, err
 	}
-	var keys []UnwrappedKey
-	if v, ok := resp["keys"]; ok {
-		_ = json.Unmarshal(v, &keys)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.loginCurveKey == 0 {
+		return nil, fmt.Errorf("login key not initialized")
 	}
+
+	serverPubBytes, err := base64.StdEncoding.DecodeString(normalizedServerPub)
+	if err != nil {
+		return nil, fmt.Errorf("invalid server public key: %w", err)
+	}
+
+	chanPtr, err := r.rt.Curve25519KeyCreateChannel(r.loginCurveKey, serverPubBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	encKeyChainBytes, err := base64.StdEncoding.DecodeString(encryptedKeyChainB64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid encrypted key chain: %w", err)
+	}
+
+	kcPtr, err := r.rt.E2EEChannelUnwrapKeyChain(chanPtr, encKeyChainBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	size, err := r.rt.E2EEKeychainSize(kcPtr)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make([]UnwrappedKey, 0, size)
+	for i := 0; i < size; i++ {
+		keyPtr, err := r.rt.E2EEKeychainGet(kcPtr, i)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get key %d from keychain: %w", i, err)
+		}
+
+		id := r.putKey(keyPtr)
+
+		exported, err := r.rt.E2EEKeyExportKey(keyPtr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to export key %d: %w", i, err)
+		}
+
+		version, err := r.rt.E2EEKeyGetVersion(keyPtr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get version for key %d: %w", i, err)
+		}
+
+		rawKeyID, err := r.rt.E2EEKeyGetKeyId(keyPtr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get key ID for key %d: %w", i, err)
+		}
+
+		keys = append(keys, UnwrappedKey{
+			KeyID:    id,
+			Exported: base64.StdEncoding.EncodeToString(exported),
+			Version:  version,
+			RawKeyID: rawKeyID,
+		})
+	}
+
 	return keys, nil
 }
 
-// loads a base64 E2EE key and returns an internal key id
+// KeyLoad loads a base64 E2EE key and returns an internal key ID.
 func (r *Runner) KeyLoad(b64Key string) (int, error) {
-	resp, err := r.call(map[string]any{
-		"type": "key_load",
-		"key":  b64Key,
-	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	keyBytes, err := base64.StdEncoding.DecodeString(b64Key)
+	if err != nil {
+		return 0, fmt.Errorf("invalid key: %w", err)
+	}
+
+	keyPtr, err := r.rt.E2EEKeyLoadKey(keyBytes)
 	if err != nil {
 		return 0, err
 	}
-	var keyID int
-	if v, ok := resp["keyId"]; ok {
-		_ = json.Unmarshal(v, &keyID)
-	}
-	return keyID, nil
+
+	return r.putKey(keyPtr), nil
 }
 
-// get the raw key id for a loaded key
+// KeyGetID returns the raw key ID for a loaded key.
 func (r *Runner) KeyGetID(keyID int) (int, error) {
-	resp, err := r.call(map[string]any{
-		"type":  "key_get_id",
-		"keyId": keyID,
-	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	keyPtr, err := r.getKey(keyID)
 	if err != nil {
 		return 0, err
 	}
-	var rawID int
-	if v, ok := resp["key"]; ok {
-		_ = json.Unmarshal(v, &rawID)
-	}
-	return rawID, nil
+
+	return r.rt.E2EEKeyGetKeyId(keyPtr)
 }
 
-// get the base64 public key for a loaded key
+// KeyGetPublic returns the base64 public key for a loaded key.
 func (r *Runner) KeyGetPublic(keyID int) (string, error) {
-	resp, err := r.call(map[string]any{
-		"type":  "key_get_public",
-		"keyId": keyID,
-	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	keyPtr, err := r.getKey(keyID)
 	if err != nil {
 		return "", err
 	}
-	var pub string
-	if v, ok := resp["publicKey"]; ok {
-		_ = json.Unmarshal(v, &pub)
+
+	pubBytes, err := r.rt.E2EEKeyGetPublicKey(keyPtr)
+	if err != nil {
+		return "", err
 	}
-	return pub, nil
+
+	return base64.StdEncoding.EncodeToString(pubBytes), nil
 }
 
-// creates a channel with our key and peer public key
+// ChannelCreate creates a channel with our key and peer public key.
+// If a raw Go private key is available for the key, also creates a pure Go
+// channel for V1/V2 encrypt/decrypt without WASM overhead.
 func (r *Runner) ChannelCreate(keyID int, peerPublicB64 string) (int, error) {
-	resp, err := r.call(map[string]any{
-		"type":          "channel_create",
-		"keyId":         keyID,
-		"peerPublicKey": peerPublicB64,
-	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	keyPtr, err := r.getKey(keyID)
 	if err != nil {
 		return 0, err
 	}
-	var chanID int
-	if v, ok := resp["channelId"]; ok {
-		_ = json.Unmarshal(v, &chanID)
+
+	peerPubBytes, err := base64.StdEncoding.DecodeString(peerPublicB64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid peer public key: %w", err)
 	}
-	return chanID, nil
+
+	chanPtr, err := r.rt.E2EEKeyCreateChannel(keyPtr, peerPubBytes)
+	if err != nil {
+		return 0, err
+	}
+
+	id := r.putChannel(chanPtr)
+
+	// If we have raw key material, also create a pure Go channel
+	if goKey, ok := r.goKeys[keyID]; ok && goKey.privKey != nil {
+		goChan, err := ltsm.NewChannel(goKey.privKey, peerPubBytes)
+		if err == nil {
+			r.goChannels[id] = goChan
+		}
+	}
+
+	return id, nil
 }
 
-// unwraps the group shared key using the channel
+// ChannelUnwrapGroupSharedKey unwraps the group shared key using the channel.
 func (r *Runner) ChannelUnwrapGroupSharedKey(channelID int, encryptedSharedKeyB64 string) (int, error) {
-	resp, err := r.call(map[string]any{
-		"type":               "channel_unwrap_group_shared_key",
-		"channelId":          channelID,
-		"encryptedSharedKey": encryptedSharedKeyB64,
-	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	chanPtr, err := r.getChannel(channelID)
 	if err != nil {
 		return 0, err
 	}
-	var keyID int
-	if v, ok := resp["keyId"]; ok {
-		_ = json.Unmarshal(v, &keyID)
+
+	encBytes, err := base64.StdEncoding.DecodeString(encryptedSharedKeyB64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid encrypted shared key: %w", err)
 	}
-	return keyID, nil
+
+	keyPtr, err := r.rt.E2EEChannelUnwrapGroupSharedKey(chanPtr, encBytes)
+	if err != nil {
+		return 0, err
+	}
+
+	return r.putKey(keyPtr), nil
 }
 
-type UnwrappedKey struct {
-	KeyID    int    `json:"keyId"`
-	Exported string `json:"exported"`
-	Version  int    `json:"version"`
-	RawKeyID int    `json:"rawKeyId"`
+// ChannelEncryptV1 encrypts plaintext with channel V1 (AES-256-CBC + MAC).
+// Uses pure Go crypto when a Go channel is available.
+func (r *Runner) ChannelEncryptV1(channelID int, plaintext string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Prefer pure Go channel
+	if goChan, ok := r.goChannels[channelID]; ok {
+		ctBytes, err := goChan.EncryptV1([]byte(plaintext))
+		if err != nil {
+			return "", fmt.Errorf("pure Go EncryptV1 failed: %w", err)
+		}
+		return base64.StdEncoding.EncodeToString(ctBytes), nil
+	}
+
+	// Fall back to transpiled module
+	chanPtr, err := r.getChannel(channelID)
+	if err != nil {
+		return "", err
+	}
+
+	ctBytes, err := r.rt.E2EEChannelEncryptV1(chanPtr, []byte(plaintext))
+	if err != nil {
+		return "", err
+	}
+
+	return base64.StdEncoding.EncodeToString(ctBytes), nil
 }
 
 // ChannelEncryptV2 encrypts plaintext with channel v2.
+// Uses pure Go crypto when a Go channel is available (faster, and V2 works
+// correctly in Go whereas it fails in the WASM bridge due to SKB issues).
 func (r *Runner) ChannelEncryptV2(channelID int, to, from string, senderKeyID, receiverKeyID, contentType, seq int, plaintext string) (string, error) {
-	resp, err := r.call(map[string]any{
-		"type":           "channel_encrypt_v2",
-		"channelId":      channelID,
-		"to":             to,
-		"from":           from,
-		"senderKeyId":    senderKeyID,
-		"receiverKeyId":  receiverKeyID,
-		"contentType":    contentType,
-		"sequenceNumber": seq,
-		"plaintext":      plaintext,
-	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Prefer pure Go channel (V2 is broken in WASM due to SKB AAD failure)
+	if goChan, ok := r.goChannels[channelID]; ok {
+		ctBytes, err := goChan.EncryptV2(to, from, senderKeyID, receiverKeyID, contentType, int64(seq), []byte(plaintext))
+		if err != nil {
+			return "", fmt.Errorf("pure Go EncryptV2 failed: %w", err)
+		}
+		return base64.StdEncoding.EncodeToString(ctBytes), nil
+	}
+
+	// Fall back to transpiled module
+	chanPtr, err := r.getChannel(channelID)
 	if err != nil {
 		return "", err
 	}
-	var ct string
-	if v, ok := resp["ciphertext"]; ok {
-		_ = json.Unmarshal(v, &ct)
+
+	ctBytes, err := r.rt.E2EEChannelEncryptV2(chanPtr,
+		to, from, senderKeyID, receiverKeyID, contentType, int64(seq), []byte(plaintext))
+	if err != nil {
+		return "", err
 	}
-	return ct, nil
+
+	return base64.StdEncoding.EncodeToString(ctBytes), nil
 }
 
-// decrypts ciphertext with channel v1 (ios)
+// ChannelDecryptV1 decrypts ciphertext with channel v1 (ios).
+// Uses pure Go crypto when a Go channel is available.
 func (r *Runner) ChannelDecryptV1(channelID, senderKeyID, receiverKeyID int, ciphertext string) (string, string, error) {
-	resp, err := r.call(map[string]any{
-		"type":          "channel_decrypt_v1",
-		"channelId":     channelID,
-		"senderKeyId":   senderKeyID,
-		"receiverKeyId": receiverKeyID,
-		"ciphertext":    ciphertext,
-	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	ctBytes, err := base64.StdEncoding.DecodeString(ciphertext)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid ciphertext: %w", err)
+	}
+
+	// Prefer pure Go channel
+	if goChan, ok := r.goChannels[channelID]; ok {
+		ptBytes, err := goChan.DecryptV1(ctBytes)
+		if err != nil {
+			return "", "", fmt.Errorf("pure Go DecryptV1 failed: %w", err)
+		}
+		return string(ptBytes), base64.StdEncoding.EncodeToString(ptBytes), nil
+	}
+
+	// Fall back to transpiled module
+	chanPtr, err := r.getChannel(channelID)
 	if err != nil {
 		return "", "", err
 	}
-	var plaintext, base64 string
-	if v, ok := resp["plaintext"]; ok {
-		_ = json.Unmarshal(v, &plaintext)
+
+	ptBytes, err := r.rt.E2EEChannelDecryptV1(chanPtr, ctBytes)
+	if err != nil {
+		return "", "", err
 	}
-	if v, ok := resp["base64"]; ok {
-		_ = json.Unmarshal(v, &base64)
-	}
-	return plaintext, base64, nil
+
+	return string(ptBytes), base64.StdEncoding.EncodeToString(ptBytes), nil
 }
 
-// decrypts ciphertext with channel v2
+// ChannelDecryptV2 decrypts ciphertext with channel v2.
+// Uses pure Go crypto when a Go channel is available (V2 is broken in WASM).
 func (r *Runner) ChannelDecryptV2(channelID int, to, from string, senderKeyID, receiverKeyID, contentType int, ciphertext string) (string, string, error) {
-	resp, err := r.call(map[string]any{
-		"type":          "channel_decrypt_v2",
-		"channelId":     channelID,
-		"to":            to,
-		"from":          from,
-		"senderKeyId":   senderKeyID,
-		"receiverKeyId": receiverKeyID,
-		"contentType":   contentType,
-		"ciphertext":    ciphertext,
-	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	ctBytes, err := base64.StdEncoding.DecodeString(ciphertext)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid ciphertext: %w", err)
+	}
+
+	// Prefer pure Go channel (V2 is broken in WASM due to SKB AAD failure)
+	if goChan, ok := r.goChannels[channelID]; ok {
+		ptBytes, err := goChan.DecryptV2(to, from, senderKeyID, receiverKeyID, contentType, ctBytes)
+		if err != nil {
+			return "", "", fmt.Errorf("pure Go DecryptV2 failed: %w", err)
+		}
+		return string(ptBytes), base64.StdEncoding.EncodeToString(ptBytes), nil
+	}
+
+	// Fall back to transpiled module
+	chanPtr, err := r.getChannel(channelID)
 	if err != nil {
 		return "", "", err
 	}
-	var plaintext, base64 string
-	if v, ok := resp["plaintext"]; ok {
-		_ = json.Unmarshal(v, &plaintext)
+
+	ptBytes, err := r.rt.E2EEChannelDecryptV2(chanPtr,
+		to, from, senderKeyID, receiverKeyID, contentType, ctBytes)
+	if err != nil {
+		return "", "", err
 	}
-	if v, ok := resp["base64"]; ok {
-		_ = json.Unmarshal(v, &base64)
-	}
-	return plaintext, base64, nil
+
+	return string(ptBytes), base64.StdEncoding.EncodeToString(ptBytes), nil
 }
 
+// GenerateE2EESecret generates a login secret with PIN and public key.
+// The Curve25519Key is used because GenerateConfirmHash and
+// LoginUnwrapKeyChain require the SKB-wrapped key for ECDH.
 func (r *Runner) GenerateE2EESecret() (*SecretResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	req := CommandRequest{Type: "e2ee"}
-	reqBytes, err := json.Marshal(req)
+	ckPtr, err := r.rt.Curve25519KeyNew(r.skPtr)
+	if err != nil {
+		return nil, err
+	}
+	r.loginCurveKey = ckPtr
+
+	pubBytes, err := r.rt.Curve25519KeyGetPublicKey(ckPtr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get public key: %w", err)
+	}
+
+	pin, err := generateLoginPIN()
 	if err != nil {
 		return nil, err
 	}
 
-	_, err = r.stdin.Write(append(reqBytes, '\n'))
+	secret, err := buildLoginSecret(pin, pubBytes)
 	if err != nil {
 		return nil, err
 	}
 
-	select {
-	case res := <-r.secCh:
-		return res, nil
-	case err := <-r.errch:
-		return nil, err
-	}
+	return &SecretResult{
+		Secret:       secret,
+		Pin:          pin,
+		PublicKeyHex: hex.EncodeToString(pubBytes),
+	}, nil
 }
 
-// GenerateConfirmHash derives the hash key chain for confirmE2EELogin using the
-// previously generated login key pair (must be generated via GenerateE2EESecret first).
+// GenerateConfirmHash derives the hash key chain for confirmE2EELogin.
+// Must be called after GenerateE2EESecret.
 func (r *Runner) GenerateConfirmHash(serverPublicKeyB64, encryptedKeyChainB64 string) (string, error) {
+	normalizedServerPub, err := normalizeServerPublicKeyB64(serverPublicKeyB64)
+	if err != nil {
+		return "", err
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	req := CommandRequest{
-		Type:              "confirm_hash",
-		ServerPublicKey:   serverPublicKeyB64,
-		EncryptedKeyChain: encryptedKeyChainB64,
+	if r.loginCurveKey == 0 {
+		return "", fmt.Errorf("login key not initialized")
 	}
 
-	reqBytes, err := json.Marshal(req)
+	serverPubBytes, err := base64.StdEncoding.DecodeString(normalizedServerPub)
+	if err != nil {
+		return "", fmt.Errorf("invalid server public key: %w", err)
+	}
+
+	chanPtr, err := r.rt.Curve25519KeyCreateChannel(r.loginCurveKey, serverPubBytes)
 	if err != nil {
 		return "", err
 	}
 
-	_, err = r.stdin.Write(append(reqBytes, '\n'))
+	encKeyChainBytes, err := base64.StdEncoding.DecodeString(encryptedKeyChainB64)
+	if err != nil {
+		return "", fmt.Errorf("invalid encrypted key chain: %w", err)
+	}
+
+	hashBytes, err := r.rt.E2EEChannelGenerateConfirmHash(chanPtr, encKeyChainBytes)
 	if err != nil {
 		return "", err
 	}
 
-	select {
-	case res := <-r.secCh:
-		if res.Hash != "" {
-			return res.Hash, nil
+	return base64.StdEncoding.EncodeToString(hashBytes), nil
+}
+
+// --- Pure Go helpers (no WASM dependency) ---
+
+func generateLoginPIN() (string, error) {
+	const limit uint32 = 4_294_000_000 // floor(2^32 / 1e6) * 1e6 to avoid modulo bias
+	var nbuf [4]byte
+	for {
+		if _, err := rand.Read(nbuf[:]); err != nil {
+			return "", fmt.Errorf("failed to generate pin: %w", err)
 		}
-		if res.Secret != "" {
-			return res.Secret, nil
+		n := binary.BigEndian.Uint32(nbuf[:])
+		if n < limit {
+			return fmt.Sprintf("%06d", n%1_000_000), nil
 		}
-		if res.Pin != "" {
-			return res.Pin, nil
-		}
-		return res.PublicKeyHex, nil
-	case err := <-r.errch:
-		return "", err
-	case sig := <-r.sigCh:
-		return sig, nil
 	}
+}
+
+func normalizeServerPublicKeyB64(serverPubB64 string) (string, error) {
+	serverRaw, err := base64.StdEncoding.DecodeString(serverPubB64)
+	if err != nil {
+		return "", fmt.Errorf("invalid server public key: %w", err)
+	}
+	if len(serverRaw) < 32 {
+		return "", fmt.Errorf("invalid server public key length: %d", len(serverRaw))
+	}
+	if len(serverRaw) > 32 {
+		serverRaw = serverRaw[len(serverRaw)-32:]
+	}
+	return base64.StdEncoding.EncodeToString(serverRaw), nil
+}
+
+func buildLoginSecret(pin string, publicKey []byte) (string, error) {
+	if len(publicKey) != 32 {
+		return "", fmt.Errorf("invalid login public key length: got %d, want 32", len(publicKey))
+	}
+	aesKey := sha256.Sum256([]byte(pin))
+	block, err := aes.NewCipher(aesKey[:])
+	if err != nil {
+		return "", fmt.Errorf("failed to create aes cipher: %w", err)
+	}
+	secret := make([]byte, 32)
+	block.Encrypt(secret[:16], publicKey[:16])
+	block.Encrypt(secret[16:], publicKey[16:])
+	return base64.StdEncoding.EncodeToString(secret), nil
 }

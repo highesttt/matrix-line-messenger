@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -146,9 +147,13 @@ func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 
 	// Send confirmE2EELogin when the encrypted key chain is provided (post-LF1 step)
 	if meta.EncryptedKeyChain != "" && meta.PublicKey != "" {
-		if err := c.ConfirmE2EELogin(verifier, meta.PublicKey, meta.EncryptedKeyChain); err == nil {
+		if err := c.ConfirmE2EELogin(verifier, meta.PublicKey, meta.EncryptedKeyChain); err != nil {
+			log.Printf("[LINE] ConfirmE2EELogin failed: %v", err)
+		} else {
 			// After confirm succeeds, finalize login using the verifier to get our access token
-			if res, err := c.LoginV2WithVerifier(verifier); err == nil {
+			if res, err := c.LoginV2WithVerifier(verifier); err != nil {
+				log.Printf("[LINE] LoginV2WithVerifier failed: %v", err)
+			} else {
 				res.EncryptedKeyChain = meta.EncryptedKeyChain
 				res.E2EEPublicKey = meta.PublicKey
 				res.E2EEVersion = meta.E2EEVersion
