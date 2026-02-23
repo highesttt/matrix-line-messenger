@@ -350,13 +350,13 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		}
 	} else {
 		// 1-1 Encryption
-		myRaw, myKeyID, err := lc.E2EE.MyKeyIDs()
-		if err != nil {
-			return nil, fmt.Errorf("missing own E2EE key: %w", err)
+		myRaw, myKeyID, errKey := lc.E2EE.MyKeyIDs()
+		if errKey != nil {
+			return nil, fmt.Errorf("missing own E2EE key: %w", errKey)
 		}
-		peerRaw, peerPub, err := lc.ensurePeerKey(ctx, portalMid)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get peer key: %w", err)
+		peerRaw, peerPub, errPeer := lc.ensurePeerKey(ctx, portalMid)
+		if errPeer != nil {
+			return nil, fmt.Errorf("failed to get peer key: %w", errPeer)
 		}
 
 		chunks, err = lc.E2EE.EncryptMessageV2Raw(portalMid, fromMid, myKeyID, peerPub, myRaw, peerRaw, contentType, payload)

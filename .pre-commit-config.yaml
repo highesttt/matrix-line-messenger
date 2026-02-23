@@ -17,8 +17,21 @@ repos:
           - "-local"
           - "github.com/highesttt/matrix-line-messenger"
           - "-w"
-      - id: go-vet-mod
-      - id: go-staticcheck-repo-mod
+
+  - repo: local
+    hooks:
+      - id: go-vet
+        name: go vet
+        entry: bash -c 'go vet $(go list ./... | grep -v /ltsm)'
+        language: system
+        pass_filenames: false
+        types: [go]
+      - id: go-staticcheck
+        name: staticcheck
+        entry: bash -c 'staticcheck $(go list ./... | grep -v /ltsm)'
+        language: system
+        pass_filenames: false
+        types: [go]
 
   - repo: https://github.com/beeper/pre-commit-go
     rev: v0.4.2

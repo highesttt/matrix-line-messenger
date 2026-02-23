@@ -203,12 +203,6 @@ func (imp *Imports) writeStdString(s string) uint32 {
 	return ptr
 }
 
-// readStdString reads an Emscripten std::string from WASM memory.
-func (imp *Imports) readStdString(ptr uint32) string {
-	length := binary.LittleEndian.Uint32(imp.mod.mem[ptr:])
-	return string(imp.mod.mem[ptr+4 : ptr+4+length])
-}
-
 // readU32 reads a uint32 from module memory.
 func (imp *Imports) readU32(ptr uint32) uint32 {
 	return binary.LittleEndian.Uint32(imp.mod.mem[ptr:])

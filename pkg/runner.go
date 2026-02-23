@@ -50,7 +50,6 @@ type UnwrappedKey struct {
 // goKeyEntry holds raw Curve25519 key material for pure Go crypto.
 type goKeyEntry struct {
 	privKey []byte // raw 32-byte private key (nil if not available)
-	pubKey  []byte // raw 32-byte public key
 }
 
 var (
