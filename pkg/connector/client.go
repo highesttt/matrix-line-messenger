@@ -1016,10 +1016,18 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					bodyText = pt
 				} else {
 					lc.UserLogin.Bridge.Log.Debug().Err(err).Msg("DecryptMessageV2 failed on first attempt")
-					if ptRetry, errRetry := lc.E2EE.DecryptMessageV2(msg); errRetry == nil {
-						bodyText = ptRetry
+					if _, _, errKey := lc.E2EE.MyKeyIDs(); errKey != nil {
+						lc.UserLogin.Bridge.Log.Error().Msg("E2EE own key not loaded — cannot decrypt any messages. Re-login required.")
 					} else {
-						lc.UserLogin.Bridge.Log.Warn().Err(errRetry).Msg("DecryptMessageV2 failed on retry")
+						// Force re-fetch peer key in case it's missing or stale, then retry decryption once
+						if _, _, errPeer := lc.ensurePeerKey(context.Background(), msg.From); errPeer != nil {
+							lc.UserLogin.Bridge.Log.Warn().Err(errPeer).Str("peer", msg.From).Msg("Failed to force-fetch peer key for retry")
+						}
+						if ptRetry, errRetry := lc.E2EE.DecryptMessageV2(msg); errRetry == nil {
+							bodyText = ptRetry
+						} else {
+							lc.UserLogin.Bridge.Log.Warn().Err(errRetry).Msg("DecryptMessageV2 failed on retry")
+						}
 					}
 				}
 			}
@@ -1839,6 +1847,7 @@ func (lc *LineClient) ensurePeerKeyForMessage(ctx context.Context, msg *line.Mes
 	receiverKeyID, err2 := e2ee.DecodeKeyID(msg.Chunks[len(msg.Chunks)-1])
 	myRaw, _, errMy := lc.E2EE.MyKeyIDs()
 	if err1 != nil || err2 != nil || errMy != nil {
+		lc.UserLogin.Bridge.Log.Warn().AnErr("sender_err", err1).AnErr("receiver_err", err2).AnErr("my_key_err", errMy).Msg("Failed to extract key IDs for peer key fetch")
 		return
 	}
 	peerRaw := senderKeyID
@@ -1851,9 +1860,11 @@ func (lc *LineClient) ensurePeerKeyForMessage(ctx context.Context, msg *line.Mes
 	if lc.E2EE.HasPeerPublicKey(peerRaw) {
 		return
 	}
+	lc.UserLogin.Bridge.Log.Debug().Int("peer_key_id", peerRaw).Str("peer_mid", msg.From).Msg("Fetching peer public key for decrypt")
 	if _, _, err := lc.ensurePeerKeyByID(ctx, msg.From, peerRaw); err != nil {
+		lc.UserLogin.Bridge.Log.Debug().Err(err).Int("key_id", peerRaw).Msg("ensurePeerKeyByID failed, trying NegotiateE2EEPublicKey")
 		if _, _, err2 := lc.ensurePeerKey(ctx, msg.From); err2 != nil {
-			lc.UserLogin.Bridge.Log.Warn().Err(err).Err(err2).Str("peer", msg.From).Int("key_id", peerRaw).Msg("Failed to fetch peer key for decrypt")
+			lc.UserLogin.Bridge.Log.Warn().Err(err2).Str("peer", msg.From).Int("key_id", peerRaw).Msg("Failed to fetch peer key for decrypt")
 		}
 	}
 }
