@@ -7,6 +7,10 @@
 A Matrix bridge for LINE Messenger using mautrix-go.\
 Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
+> [!WARNING]
+> When updating from a version released before February 14, 2024, please make sure to reset your configuration and log in again.\
+> This is due to a change in the login flow that requires users to log in again to fetch the necessary keys for E2EE decryption.
+
 ## Known issues
 
 > [!NOTE]

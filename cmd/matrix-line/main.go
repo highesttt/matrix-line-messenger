@@ -19,7 +19,7 @@ func main() {
 		Name:        "matrix-line",
 		Description: "A Matrix-LINE bridge",
 		URL:         "https://github.com/highesttt/matrix-line-messenger",
-		Version:     "0.1.0",
+		Version:     "1.0.0",
 		Connector:   &connector.LineConnector{},
 	}
 	m.InitVersion(Tag, Commit, BuildTime)
