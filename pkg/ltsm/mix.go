@@ -33,4 +33,3 @@ func Mix66(dst, x, y []byte, constOff int) {
 		dst[i] = prev & 0x07
 	}
 }
-
