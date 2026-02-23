@@ -24,4 +24,3 @@ func init() {
 func memByte(off int) byte {
 	return memInit[off]
 }
-

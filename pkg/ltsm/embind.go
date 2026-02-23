@@ -64,10 +64,10 @@ func newEmvalTable() *EmvalTable {
 		refCnts: make([]int, 5),
 	}
 	// Reserved handles
-	t.values[0] = struct{}{} // undefined
-	t.values[1] = nil        // null
-	t.values[2] = true       // true
-	t.values[3] = false      // false
+	t.values[0] = struct{}{}       // undefined
+	t.values[1] = nil              // null
+	t.values[2] = true             // true
+	t.values[3] = false            // false
 	t.values[4] = map[string]any{} // empty object
 	t.refCnts[0] = 1
 	t.refCnts[1] = 1
@@ -141,11 +141,11 @@ func (t *EmvalTable) DecRef(handle uint32) {
 // Imports implements ModuleImports for the transpiled WASM Module.
 // It handles embind registrations and provides the runtime environment.
 type Imports struct {
-	mod   *Module
-	types map[uint32]*TypeInfo
-	classes map[uint32]*ClassInfo
+	mod         *Module
+	types       map[uint32]*TypeInfo
+	classes     map[uint32]*ClassInfo
 	classByName map[string]*ClassInfo
-	emval *EmvalTable
+	emval       *EmvalTable
 
 	// File descriptor state for /dev/urandom emulation
 	urandomFD uint32
