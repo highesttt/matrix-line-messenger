@@ -1,6 +1,6 @@
 ARG DOCKER_HUB="docker.io"
 
-FROM ${DOCKER_HUB}/alpine:3.22 AS builder
+FROM ${DOCKER_HUB}/alpine:3.23 AS builder
 
 RUN apk add --no-cache go git build-base olm-dev
 
@@ -12,7 +12,7 @@ RUN go mod download
 COPY . .
 RUN go build -o matrix-line ./cmd/matrix-line
 
-FROM ${DOCKER_HUB}/alpine:3.22
+FROM ${DOCKER_HUB}/alpine:3.23
 
 ENV UID=1337 \
     GID=1337
