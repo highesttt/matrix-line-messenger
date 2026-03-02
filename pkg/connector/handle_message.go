@@ -77,9 +77,12 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					if _, _, errKey := lc.E2EE.MyKeyIDs(); errKey != nil {
 						lc.UserLogin.Bridge.Log.Error().Msg("E2EE own key not loaded — cannot decrypt any messages. Re-login required.")
 					} else {
-						// Force re-fetch peer key in case it's missing or stale, then retry decryption once
-						if _, _, errPeer := lc.ensurePeerKey(context.Background(), msg.From); errPeer != nil {
-							lc.UserLogin.Bridge.Log.Warn().Err(errPeer).Str("peer", msg.From).Msg("Failed to force-fetch peer key for retry")
+						peerMid := msg.From
+						if peerMid == lc.Mid || peerMid == string(lc.UserLogin.ID) {
+							peerMid = msg.To
+						}
+						if _, _, errPeer := lc.ensurePeerKey(context.Background(), peerMid); errPeer != nil {
+							lc.UserLogin.Bridge.Log.Warn().Err(errPeer).Str("peer", peerMid).Msg("Failed to force-fetch peer key for retry")
 						}
 						if ptRetry, errRetry := lc.E2EE.DecryptMessageV2(msg); errRetry == nil {
 							bodyText = ptRetry

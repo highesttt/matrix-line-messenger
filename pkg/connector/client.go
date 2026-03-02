@@ -91,48 +91,24 @@ func (lc *LineClient) Connect(ctx context.Context) {
 		}
 	}
 	if lc.AccessToken == "" {
-		var email, password string
-		if meta, ok := lc.UserLogin.Metadata.(*UserLoginMetadata); ok {
-			email = meta.Email
-			password = meta.Password
-		}
-
-		if email != "" && password != "" {
-			lc.UserLogin.Bridge.Log.Info().Str("email", email).Msg("Attempting to login with email/password...")
-			client := line.NewClient("")
-			res, err := client.Login(email, password)
-			if err != nil {
-				lc.UserLogin.BridgeState.Send(status.BridgeState{
-					StateEvent: status.StateBadCredentials,
-					Error:      "line-login-failed",
-					Message:    fmt.Sprintf("login failed: %v", err),
-				})
-				return
-			}
-			if res.AuthToken == "" {
-				lc.UserLogin.BridgeState.Send(status.BridgeState{
-					StateEvent: status.StateBadCredentials,
-					Error:      "line-login-interaction-required",
-					Message:    "Login requires interaction (PIN code), cannot perform in background.",
-				})
-				return
-			}
-			lc.AccessToken = client.AccessToken
-			if res.Mid != "" {
-				lc.Mid = res.Mid
-				if meta, ok := lc.UserLogin.Metadata.(*UserLoginMetadata); ok {
-					meta.Mid = res.Mid
-				}
-			}
-			lc.UserLogin.Bridge.Log.Info().Msg("Login successful!")
-		} else {
+		if err := lc.tryLogin(ctx); err != nil {
 			lc.UserLogin.BridgeState.Send(status.BridgeState{
 				StateEvent: status.StateBadCredentials,
-				Error:      "line-missing-token",
-				Message:    "access token missing and no credentials provided",
+				Error:      "line-login-failed",
+				Message:    err.Error(),
 			})
 			return
 		}
+	}
+
+	// Verify the token is still valid before proceeding
+	if err := lc.ensureValidToken(ctx); err != nil {
+		lc.UserLogin.BridgeState.Send(status.BridgeState{
+			StateEvent: status.StateBadCredentials,
+			Error:      "line-token-expired",
+			Message:    fmt.Sprintf("session expired and could not be restored: %v", err),
+		})
+		return
 	}
 
 	lc.UserLogin.Bridge.Log.Info().Int("token_len", len(lc.AccessToken)).Msg("LINE client connected; notifying bridge")
@@ -157,17 +133,9 @@ func (lc *LineClient) Connect(ctx context.Context) {
 		// Storage key is optional for runtime decrypt/encrypt; try it for file support
 		client := line.NewClient(lc.AccessToken)
 		ei3, err := client.GetEncryptedIdentityV3()
-		if err != nil && lc.isRefreshRequired(err) {
-			lc.UserLogin.Bridge.Log.Info().Msg("Access token expired, refreshing...")
-			if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
-				client = line.NewClient(lc.AccessToken)
-				ei3, err = client.GetEncryptedIdentityV3()
-			} else {
-				lc.UserLogin.Bridge.Log.Error().Err(errRefresh).Msg("Failed to refresh token")
-			}
-		}
-
-		if err == nil {
+		if err != nil {
+			lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to fetch EncryptedIdentityV3")
+		} else {
 			if err := mgr.InitStorage(ei3.WrappedNonce, ei3.KDFParameter1, ei3.KDFParameter2); err != nil {
 				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to init storage key")
 			} else if data, err := mgr.LoadSecureDataFromFile(string(lc.UserLogin.ID)); err == nil {
@@ -175,14 +143,112 @@ func (lc *LineClient) Connect(ctx context.Context) {
 					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to load E2EE key from secure data")
 				}
 			}
-		} else {
-			lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to fetch EncryptedIdentityV3")
 		}
 	}
 
 	go lc.syncChats(ctx)
 	go lc.prefetchMessages(ctx)
 	go lc.pollLoop(ctx)
+}
+
+func (lc *LineClient) tryLogin(ctx context.Context) error {
+	var email, password, certificate string
+	if meta, ok := lc.UserLogin.Metadata.(*UserLoginMetadata); ok {
+		email = meta.Email
+		password = meta.Password
+		certificate = meta.Certificate
+	}
+
+	if email == "" || password == "" {
+		return fmt.Errorf("no stored credentials available for re-login")
+	}
+
+	lc.UserLogin.Bridge.Log.Info().
+		Str("email", email).
+		Bool("has_certificate", certificate != "").
+		Msg("Attempting to login with email/password...")
+	client := line.NewClient("")
+	res, err := client.Login(email, password, certificate)
+	if err != nil {
+		return fmt.Errorf("login failed: %w", err)
+	}
+	if res.AuthToken == "" {
+		pin := res.Pin
+		if res.PinCode != "" {
+			pin = res.PinCode
+		}
+		if pin != "" {
+			lc.UserLogin.Bridge.Log.Warn().Str("pin", pin).Msg("PIN verification required — enter this PIN on your LINE mobile app to complete re-login")
+		}
+		if res.Verifier == "" {
+			return fmt.Errorf("login requires interaction but no verifier returned")
+		}
+
+		lc.UserLogin.Bridge.Log.Info().Msg("Waiting for PIN verification on mobile device...")
+		waitClient := line.NewClient("")
+		waitRes, err := waitClient.WaitForLogin(res.Verifier)
+		if err != nil {
+			return fmt.Errorf("PIN verification failed: %w", err)
+		}
+		if waitRes.AuthToken == "" {
+			return fmt.Errorf("PIN verification completed but no auth token received")
+		}
+		// Replace res with the verified result
+		res = waitRes
+		client = waitClient
+	}
+	lc.AccessToken = client.AccessToken
+	if res.TokenV3IssueResult != nil {
+		if res.TokenV3IssueResult.AccessToken != "" {
+			lc.AccessToken = res.TokenV3IssueResult.AccessToken
+		}
+		if res.TokenV3IssueResult.RefreshToken != "" {
+			lc.RefreshToken = res.TokenV3IssueResult.RefreshToken
+		}
+	}
+	if res.Mid != "" {
+		lc.Mid = res.Mid
+		if meta, ok := lc.UserLogin.Metadata.(*UserLoginMetadata); ok {
+			meta.Mid = res.Mid
+		}
+	}
+
+	// Save the new tokens and updated certificate to metadata
+	if meta, ok := lc.UserLogin.Metadata.(*UserLoginMetadata); ok {
+		meta.AccessToken = lc.AccessToken
+		meta.RefreshToken = lc.RefreshToken
+		if res.Certificate != "" {
+			meta.Certificate = res.Certificate
+		}
+		if err := lc.UserLogin.Save(ctx); err != nil {
+			lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to save new tokens to DB")
+		}
+	}
+
+	lc.UserLogin.Bridge.Log.Info().Msg("Login successful!")
+	return nil
+}
+
+func (lc *LineClient) ensureValidToken(ctx context.Context) error {
+	client := line.NewClient(lc.AccessToken)
+	_, err := client.GetProfile()
+	if err == nil {
+		return nil
+	}
+	if !lc.isRefreshRequired(err) {
+		return nil
+	}
+
+	lc.UserLogin.Bridge.Log.Info().Msg("Access token expired, attempting refresh...")
+	if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+		lc.UserLogin.Bridge.Log.Info().Msg("Token refreshed successfully")
+		return nil
+	} else {
+		lc.UserLogin.Bridge.Log.Warn().Err(errRefresh).Msg("Token refresh failed")
+	}
+
+	lc.UserLogin.Bridge.Log.Info().Msg("Attempting re-login with stored credentials...")
+	return lc.tryLogin(ctx)
 }
 
 func (lc *LineClient) Disconnect() {}

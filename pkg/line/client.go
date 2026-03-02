@@ -36,7 +36,7 @@ func NewClient(token string) *Client {
 	}
 }
 
-func (c *Client) Login(email, pass string) (*LoginResult, error) {
+func (c *Client) Login(email, pass, certificate string) (*LoginResult, error) {
 	// 1. Get RSA Key Info
 	rsaKey, err := c.GetRSAKeyInfo()
 	if err != nil {
@@ -56,8 +56,8 @@ func (c *Client) Login(email, pass string) (*LoginResult, error) {
 	}
 
 	// 4. LoginV2
-	// Identifier is KeyName when using RSA
-	respBytes, err := c.LoginV2(rsaKey.KeyName, encryptedPass, "", secretRes.Secret)
+	// Identifier is KeyName when using RSA; certificate allows skipping PIN verification
+	respBytes, err := c.LoginV2(rsaKey.KeyName, encryptedPass, certificate, secretRes.Secret)
 	if err != nil && isLoginNotSupported(err) {
 		respBytes, err = c.LoginV2WithType(0, rsaKey.KeyName, encryptedPass, "", "")
 	}

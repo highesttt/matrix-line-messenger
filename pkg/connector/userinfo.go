@@ -160,6 +160,25 @@ func (lc *LineClient) getContact(mid string) line.Contact {
 	if contact, ok := lc.contactCache[mid]; ok {
 		return contact
 	}
+
+	// use Getprofile for our own user data
+	if mid == lc.Mid || mid == string(lc.UserLogin.ID) {
+		client := line.NewClient(lc.AccessToken)
+		profile, err := client.GetProfile()
+		if err != nil && lc.isRefreshRequired(err) {
+			if errRefresh := lc.refreshAndSave(context.TODO()); errRefresh == nil {
+				client = line.NewClient(lc.AccessToken)
+				profile, err = client.GetProfile()
+			}
+		}
+		if err == nil && profile != nil {
+			contact := line.Contact{Mid: mid, DisplayName: profile.DisplayName, PicturePath: profile.PicturePath}
+			lc.contactCache[mid] = contact
+			return contact
+		}
+		return line.Contact{Mid: mid, DisplayName: mid}
+	}
+
 	client := line.NewClient(lc.AccessToken)
 	res, err := client.GetContactsV2([]string{mid})
 	if err != nil && lc.isRefreshRequired(err) {

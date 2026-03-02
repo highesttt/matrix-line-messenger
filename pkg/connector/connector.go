@@ -78,6 +78,7 @@ type UserLoginMetadata struct {
 	RefreshToken      string            `json:"refresh_token,omitempty"`
 	Email             string            `json:"email,omitempty"`
 	Password          string            `json:"password,omitempty"`
+	Certificate       string            `json:"certificate,omitempty"`
 	Mid               string            `json:"mid,omitempty"`
 	EncryptedKeyChain string            `json:"encrypted_key_chain,omitempty"`
 	E2EEPublicKey     string            `json:"e2ee_public_key,omitempty"`
@@ -163,7 +164,7 @@ func (ll *LineEmailLogin) SubmitUserInput(ctx context.Context, input map[string]
 	}
 
 	client := line.NewClient("")
-	res, err := client.Login(ll.Email, ll.Password)
+	res, err := client.Login(ll.Email, ll.Password, "")
 	if err != nil {
 		reason := loginErrorReason(err)
 		if reason == "" {
@@ -236,7 +237,7 @@ func (ll *LineEmailLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error)
 
 	if ll.AwaitingPIN {
 		client := line.NewClient("")
-		res, err := client.Login(ll.Email, ll.Password)
+		res, err := client.Login(ll.Email, ll.Password, "")
 		if err != nil {
 			return nil, fmt.Errorf("login failed: %w", err)
 		}
@@ -332,7 +333,7 @@ func (ll *LineEmailLogin) finishLogin(ctx context.Context, res *line.LoginResult
 		displayName = "LINE User"
 	}
 
-	meta := &UserLoginMetadata{AccessToken: token, RefreshToken: refreshToken, Email: ll.Email, Password: ll.Password, Mid: res.Mid}
+	meta := &UserLoginMetadata{AccessToken: token, RefreshToken: refreshToken, Email: ll.Email, Password: ll.Password, Certificate: res.Certificate, Mid: res.Mid}
 	if res.EncryptedKeyChain != "" && res.E2EEPublicKey != "" {
 		meta.EncryptedKeyChain = res.EncryptedKeyChain
 		meta.E2EEPublicKey = res.E2EEPublicKey
