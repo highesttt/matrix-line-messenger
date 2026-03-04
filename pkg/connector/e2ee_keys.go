@@ -68,7 +68,7 @@ func (lc *LineClient) fetchAndUnwrapGroupKey(ctx context.Context, chatMid string
 	return nil
 }
 
-func (lc *LineClient) ensurePeerKey(_ context.Context, mid string) (int, string, error) {
+func (lc *LineClient) ensurePeerKey(ctx context.Context, mid string) (int, string, error) {
 	if lc.peerKeys == nil {
 		lc.peerKeys = make(map[string]peerKeyInfo)
 	}
@@ -80,8 +80,18 @@ func (lc *LineClient) ensurePeerKey(_ context.Context, mid string) (int, string,
 	}
 	client := line.NewClient(lc.AccessToken)
 	res, err := client.NegotiateE2EEPublicKey(mid)
+	if err != nil && lc.isRefreshRequired(err) {
+		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+			client = line.NewClient(lc.AccessToken)
+			res, err = client.NegotiateE2EEPublicKey(mid)
+		}
+	}
 	if err != nil {
-		return 0, "", err
+		lc.UserLogin.Bridge.Log.Debug().Err(err).Str("peer_mid", mid).Msg("NegotiateE2EEPublicKey failed, trying GetE2EEPublicKey with keyVersion=1")
+		res, err = client.GetE2EEPublicKey(mid, 1, 0)
+		if err != nil {
+			return 0, "", fmt.Errorf("peer E2EE key not available for %s: %w", mid, err)
+		}
 	}
 	keyID, err := res.KeyID.Int64()
 	if err != nil {

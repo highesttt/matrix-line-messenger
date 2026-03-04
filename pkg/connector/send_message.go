@@ -36,6 +36,17 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 	portalMid := string(msg.Portal.ID)
 	fromMid := lc.midOrFallback()
 
+	lowerPortalID := strings.ToLower(portalMid)
+	isGroup := strings.HasPrefix(lowerPortalID, "c") || strings.HasPrefix(lowerPortalID, "r")
+
+	// For 1:1 chats, verify peer key is available BEFORE uploading media
+	// to avoid wasting bandwidth on uploads that will fail at encryption
+	if !isGroup {
+		if _, _, errPeer := lc.ensurePeerKey(ctx, portalMid); errPeer != nil {
+			return nil, fmt.Errorf("failed to get peer E2EE key (cannot send encrypted message): %w", errPeer)
+		}
+	}
+
 	var chunks []string
 	var err error
 	contentType := int(ContentText)
@@ -327,9 +338,6 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		return nil, fmt.Errorf("message type %s not implemented", msg.Content.MsgType)
 	}
 
-	lowerPortalID := strings.ToLower(portalMid)
-	isGroup := strings.HasPrefix(lowerPortalID, "c") || strings.HasPrefix(lowerPortalID, "r")
-
 	if isGroup {
 		if errFetch := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); errFetch != nil {
 			lc.UserLogin.Bridge.Log.Debug().Err(errFetch).Str("chat_mid", portalMid).Msg("fetchAndUnwrapGroupKey before encrypt failed")
@@ -349,7 +357,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			}
 		}
 	} else {
-		// 1-1 Encryption
+		// 1-1 Encryption — peer key already verified at function start
 		myRaw, myKeyID, errKey := lc.E2EE.MyKeyIDs()
 		if errKey != nil {
 			return nil, fmt.Errorf("missing own E2EE key: %w", errKey)

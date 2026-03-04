@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -36,6 +37,16 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 	}
 
 	portalKey := networkid.PortalKey{ID: makePortalID(portalIDStr), Receiver: lc.UserLogin.ID}
+
+	lc.UserLogin.Bridge.Log.Debug().
+		Str("msg_id", msg.ID).
+		Int("content_type", msg.ContentType).
+		Int("to_type", msg.ToType).
+		Bool("has_content", msg.HasContent).
+		Int("chunks", len(msg.Chunks)).
+		Str("from", msg.From).
+		Str("to", msg.To).
+		Msg("Processing incoming LINE message")
 
 	// Handle Content
 	bodyText := msg.Text
@@ -139,71 +150,115 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 			if ContentType(data.ContentType) == ContentImage {
 				oid := data.ContentMetadata["OID"]
 
-				if oid != "" {
-					imgData, err := client.DownloadOBS(oid, data.ID)
+				// Fallback: check decrypted payload for OID?
+				if oid == "" && decryptedBody != "" && strings.Contains(decryptedBody, "OID") {
+					var decryptInfo struct {
+						OID string `json:"OID"`
+					}
+					if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err == nil && decryptInfo.OID != "" {
+						oid = decryptInfo.OID
+					}
+				}
 
-					// Refresh token if we get a 401
-					if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err)) {
-						if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
-							client = line.NewClient(lc.AccessToken)
-							imgData, err = client.DownloadOBS(oid, data.ID)
-						} else {
-							lc.UserLogin.Bridge.Log.Warn().Err(errRefresh).Msg("Failed to refresh token for OBS download")
+				if oid == "" {
+					lc.UserLogin.Bridge.Log.Debug().Str("msg_id", data.ID).Msg("No OID in metadata or payload, using message ID as OID")
+					oid = data.ID
+				}
+
+				imgData, err := client.DownloadOBS(oid, data.ID)
+
+				// Refresh token if we get a 401
+				if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err)) {
+					if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+						client = line.NewClient(lc.AccessToken)
+						imgData, err = client.DownloadOBS(oid, data.ID)
+					} else {
+						lc.UserLogin.Bridge.Log.Warn().Err(errRefresh).Msg("Failed to refresh token for OBS download")
+					}
+				}
+
+				if err != nil {
+					lc.UserLogin.Bridge.Log.Error().
+						Err(err).
+						Str("oid", oid).
+						Str("msg_id", data.ID).
+						Msg("Failed to download image from OBS")
+					return nil, fmt.Errorf("failed to download image from OBS: %w", err)
+				}
+
+				// Decrypt image if it has keyMaterial (E2EE)
+				decrypted := false
+				if decryptedBody != "" && strings.Contains(decryptedBody, "keyMaterial") {
+					var decryptInfo struct {
+						KeyMaterial string `json:"keyMaterial"`
+						FileName    string `json:"fileName"`
+					}
+					if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err == nil && decryptInfo.KeyMaterial != "" {
+						decryptedImg, err := lc.decryptImageData(imgData, decryptInfo.KeyMaterial)
+						if err != nil {
+							lc.UserLogin.Bridge.Log.Error().
+								Err(err).
+								Msg("Failed to decrypt image data")
+							return nil, fmt.Errorf("failed to decrypt image data: %w", err)
 						}
+						imgData = decryptedImg
+						decrypted = true
 					}
+				}
 
-					if err != nil {
-						lc.UserLogin.Bridge.Log.Error().
-							Err(err).
-							Str("oid", oid).
-							Str("msg_id", data.ID).
-							Msg("Failed to download image from OBS")
-						return nil, fmt.Errorf("failed to download image from OBS: %w", err)
-					}
-
-					// Decrypt image if it has keyMaterial (E2EE)
-					if decryptedBody != "" && strings.Contains(decryptedBody, "keyMaterial") {
-						var decryptInfo struct {
-							KeyMaterial string `json:"keyMaterial"`
-							FileName    string `json:"fileName"`
+				// Fallback: decrypt using ENC_KM from content metadata (if not already decrypted)
+				if !decrypted {
+					if encKM := data.ContentMetadata["ENC_KM"]; encKM != "" && len(imgData) > 32 {
+						decryptedImg, err := lc.decryptImageData(imgData, encKM)
+						if err != nil {
+							lc.UserLogin.Bridge.Log.Error().
+								Err(err).
+								Msg("Failed to decrypt image data from ENC_KM")
+							return nil, fmt.Errorf("failed to decrypt image data: %w", err)
 						}
-						if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err == nil && decryptInfo.KeyMaterial != "" {
-							decryptedImg, err := lc.decryptImageData(imgData, decryptInfo.KeyMaterial)
-							if err != nil {
-								lc.UserLogin.Bridge.Log.Error().
-									Err(err).
-									Msg("Failed to decrypt image data")
-								return nil, fmt.Errorf("failed to decrypt image data: %w", err)
-							}
-							imgData = decryptedImg
-						}
+						imgData = decryptedImg
 					}
+				}
 
-					// Upload to Matrix
-					mxc, file, err := intent.UploadMedia(ctx, portal.MXID, imgData, "image.jpg", "image/jpeg")
-					if err != nil {
-						lc.UserLogin.Bridge.Log.Error().
-							Err(err).
-							Int("size_bytes", len(imgData)).
-							Msg("Failed to upload image to Matrix")
-						return nil, fmt.Errorf("failed to upload image to matrix: %w", err)
-					}
+				mimeType := http.DetectContentType(imgData)
+				fileName := "image.jpg"
+				switch mimeType {
+				case "image/png":
+					fileName = "image.png"
+				case "image/gif":
+					fileName = "image.gif"
+				case "image/webp":
+					fileName = "image.webp"
+				}
 
-					return &bridgev2.ConvertedMessage{
-						Parts: []*bridgev2.ConvertedMessagePart{
-							{
-								Type: event.EventMessage,
-								Content: &event.MessageEventContent{
-									MsgType:   event.MsgImage,
-									Body:      "image.jpg",
-									URL:       mxc,
-									File:      file,
-									RelatesTo: replyRelatesTo,
+				// Upload to Matrix
+				mxc, file, err := intent.UploadMedia(ctx, portal.MXID, imgData, fileName, mimeType)
+				if err != nil {
+					lc.UserLogin.Bridge.Log.Error().
+						Err(err).
+						Int("size_bytes", len(imgData)).
+						Msg("Failed to upload image to Matrix")
+					return nil, fmt.Errorf("failed to upload image to matrix: %w", err)
+				}
+
+				return &bridgev2.ConvertedMessage{
+					Parts: []*bridgev2.ConvertedMessagePart{
+						{
+							Type: event.EventMessage,
+							Content: &event.MessageEventContent{
+								MsgType:   event.MsgImage,
+								Body:      fileName,
+								URL:       mxc,
+								File:      file,
+								Info: &event.FileInfo{
+									MimeType: mimeType,
+									Size:     len(imgData),
 								},
+								RelatesTo: replyRelatesTo,
 							},
 						},
-					}, nil
-				}
+					},
+				}, nil
 			}
 
 			if ContentType(data.ContentType) == ContentVideo {
@@ -218,6 +273,11 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err == nil && decryptInfo.OID != "" {
 						oid = decryptInfo.OID
 					}
+				}
+
+				if oid == "" {
+					lc.UserLogin.Bridge.Log.Debug().Str("msg_id", data.ID).Msg("No OID for video, using message ID as OID")
+					oid = data.ID
 				}
 
 				if oid != "" {
@@ -355,109 +415,120 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 			// Handle File type
 			if ContentType(data.ContentType) == ContentFile {
 				oid := data.ContentMetadata["OID"]
-				if oid == "" && decryptedBody != "" && strings.Contains(decryptedBody, "fileName") {
-					lc.UserLogin.Bridge.Log.Debug().Msg("File message with encrypted payload, OID in metadata")
+
+				// Fallback: check decrypted payload for OID
+				if oid == "" && decryptedBody != "" && strings.Contains(decryptedBody, "OID") {
+					var decryptInfo struct {
+						OID string `json:"OID"`
+					}
+					if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err == nil && decryptInfo.OID != "" {
+						oid = decryptInfo.OID
+					}
 				}
 
-				if oid != "" {
-					fileData, err := client.DownloadOBSWithSID(oid, data.ID, "emf")
-					if err != nil {
+				// use message ID as OID
+				if oid == "" {
+					lc.UserLogin.Bridge.Log.Debug().Str("msg_id", data.ID).Msg("No OID for file, using message ID as OID")
+					oid = data.ID
+				}
+
+				fileData, err := client.DownloadOBSWithSID(oid, data.ID, "emf")
+				if err != nil {
+					lc.UserLogin.Bridge.Log.Error().
+						Err(err).
+						Str("oid", oid).
+						Msg("Failed to download file from OBS")
+					return nil, fmt.Errorf("failed to download file from OBS: %w", err)
+				}
+
+				// Try to decrypt using keyMaterial from encrypted payload
+				var fileName string
+				if decryptedBody != "" && strings.Contains(decryptedBody, "keyMaterial") {
+					var decryptInfo struct {
+						KeyMaterial string `json:"keyMaterial"`
+						FileName    string `json:"fileName"`
+					}
+					if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err != nil {
 						lc.UserLogin.Bridge.Log.Error().
 							Err(err).
-							Str("oid", oid).
-							Msg("Failed to download file from OBS")
-						return nil, fmt.Errorf("failed to download file from OBS: %w", err)
+							Msg("Failed to parse file payload JSON")
+						return nil, fmt.Errorf("failed to parse file payload: %w", err)
 					}
 
-					// Try to decrypt using keyMaterial from encrypted payload
-					var fileName string
-					if decryptedBody != "" && strings.Contains(decryptedBody, "keyMaterial") {
-						var decryptInfo struct {
-							KeyMaterial string `json:"keyMaterial"`
-							FileName    string `json:"fileName"`
+					if decryptInfo.KeyMaterial != "" {
+						keyPreview := decryptInfo.KeyMaterial
+						if len(keyPreview) > 20 {
+							keyPreview = keyPreview[:20] + "..."
 						}
-						if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err != nil {
+						lc.UserLogin.Bridge.Log.Debug().
+							Str("key_material_preview", keyPreview).
+							Msg("Decrypting file using keyMaterial from payload")
+
+						decryptedFile, err := lc.decryptImageData(fileData, decryptInfo.KeyMaterial)
+						if err != nil {
 							lc.UserLogin.Bridge.Log.Error().
 								Err(err).
-								Msg("Failed to parse file payload JSON")
-							return nil, fmt.Errorf("failed to parse file payload: %w", err)
+								Msg("Failed to decrypt file data")
+							return nil, fmt.Errorf("failed to decrypt file data: %w", err)
 						}
-
-						if decryptInfo.KeyMaterial != "" {
-							keyPreview := decryptInfo.KeyMaterial
-							if len(keyPreview) > 20 {
-								keyPreview = keyPreview[:20] + "..."
-							}
-							lc.UserLogin.Bridge.Log.Debug().
-								Str("key_material_preview", keyPreview).
-								Msg("Decrypting file using keyMaterial from payload")
-
-							decryptedFile, err := lc.decryptImageData(fileData, decryptInfo.KeyMaterial)
-							if err != nil {
-								lc.UserLogin.Bridge.Log.Error().
-									Err(err).
-									Msg("Failed to decrypt file data")
-								return nil, fmt.Errorf("failed to decrypt file data: %w", err)
-							}
-							fileData = decryptedFile
-							lc.UserLogin.Bridge.Log.Info().
-								Int("decrypted_size", len(fileData)).
-								Msg("Successfully decrypted file")
-						}
-
-						if decryptInfo.FileName != "" {
-							fileName = decryptInfo.FileName
-						}
+						fileData = decryptedFile
+						lc.UserLogin.Bridge.Log.Info().
+							Int("decrypted_size", len(fileData)).
+							Msg("Successfully decrypted file")
 					}
 
-					if fileName == "" {
-						fileName = data.ContentMetadata["FILE_NAME"]
+					if decryptInfo.FileName != "" {
+						fileName = decryptInfo.FileName
 					}
+				}
 
-					if fileName == "" {
-						fileName = "file.bin"
-					}
+				if fileName == "" {
+					fileName = data.ContentMetadata["FILE_NAME"]
+				}
 
-					// Detect MIME type from file extension
-					mimeType := "application/octet-stream"
-					if strings.HasSuffix(strings.ToLower(fileName), ".pdf") {
-						mimeType = "application/pdf"
-					}
+				if fileName == "" {
+					fileName = "file.bin"
+				}
 
-					mxc, file, err := intent.UploadMedia(ctx, portal.MXID, fileData, fileName, mimeType)
-					if err != nil {
-						lc.UserLogin.Bridge.Log.Error().
-							Err(err).
-							Int("size_bytes", len(fileData)).
-							Msg("Failed to upload file to Matrix")
-						return nil, fmt.Errorf("failed to upload file to matrix: %w", err)
-					}
+				// Detect MIME type from file extension
+				mimeType := "application/octet-stream"
+				if strings.HasSuffix(strings.ToLower(fileName), ".pdf") {
+					mimeType = "application/pdf"
+				}
 
-					lc.UserLogin.Bridge.Log.Info().
-						Str("mxc", mxc.ParseOrIgnore().String()).
-						Str("file_name", fileName).
-						Int("size", len(fileData)).
-						Msg("Successfully uploaded file to Matrix")
+				mxc, file, err := intent.UploadMedia(ctx, portal.MXID, fileData, fileName, mimeType)
+				if err != nil {
+					lc.UserLogin.Bridge.Log.Error().
+						Err(err).
+						Int("size_bytes", len(fileData)).
+						Msg("Failed to upload file to Matrix")
+					return nil, fmt.Errorf("failed to upload file to matrix: %w", err)
+				}
 
-					return &bridgev2.ConvertedMessage{
-						Parts: []*bridgev2.ConvertedMessagePart{
-							{
-								Type: event.EventMessage,
-								Content: &event.MessageEventContent{
-									MsgType: event.MsgFile,
-									Body:    fileName,
-									URL:     mxc,
-									File:    file,
-									Info: &event.FileInfo{
-										MimeType: mimeType,
-										Size:     len(fileData),
-									},
-									RelatesTo: replyRelatesTo,
+				lc.UserLogin.Bridge.Log.Info().
+					Str("mxc", mxc.ParseOrIgnore().String()).
+					Str("file_name", fileName).
+					Int("size", len(fileData)).
+					Msg("Successfully uploaded file to Matrix")
+
+				return &bridgev2.ConvertedMessage{
+					Parts: []*bridgev2.ConvertedMessagePart{
+						{
+							Type: event.EventMessage,
+							Content: &event.MessageEventContent{
+								MsgType: event.MsgFile,
+								Body:    fileName,
+								URL:     mxc,
+								File:    file,
+								Info: &event.FileInfo{
+									MimeType: mimeType,
+									Size:     len(fileData),
 								},
+								RelatesTo: replyRelatesTo,
 							},
 						},
-					}, nil
-				}
+					},
+				}, nil
 			}
 
 			// Handle Sticker
