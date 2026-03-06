@@ -172,7 +172,7 @@ This bridge requires LINE's end-to-end encryption feature, `Letter Sealing`, to 
 4. Try logging in to the bridge again.
 
 > [!NOTE]
-> - The `Letter Sealing` setting is configurable from LINE mobile app.
+> - The `Letter Sealing` setting is only configurable from the LINE mobile app.
 > - `Letter Sealing` was introduced as an optional feature in August 2015.
 > - It was enabled by default in major LINE clients in 2016.
 > - Since 2021, it has been enabled by default in all regions and can no longer be turned off manually.
