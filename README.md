@@ -148,10 +148,32 @@ or
 
 ## Can't log in?
 
-This bridge uses the email from your Account information. If your account is an older account, you signed in using phone number or signed in with Google, you will not have an email set for your LINE account.
+There are two common reasons login can fail:
 
-### How to set an email for your LINE account
+### 1. No email is set on your LINE account
+
+This bridge uses the email from your Account information. If your account is older, you signed in using a phone number, or you signed in with Google, you may not have an email set for your LINE account.
+
+**How to set an email for your LINE account:**
 
 1. Open the LINE app on your mobile device.
 2. Go to `Settings` > `Account`.
 3. Tap on `Email address` and set your email address.
+
+### 2. Letter Sealing (End-to-End Encryption) is disabled
+
+This bridge requires LINE's end-to-end encryption feature, `Letter Sealing`, to be enabled. If it is disabled, the login will fail with `Error when logging in: Internal error`.
+
+**How to enable Letter Sealing:**
+
+1. Open the LINE app on your mobile device.
+2. Go to `Settings` > `Privacy`.
+3. Turn `Letter Sealing` on (note: it can't be turned off once you do so)
+4. Try logging in to the bridge again.
+
+> [!NOTE]
+> - The `Letter Sealing` setting is configurable from LINE mobile app.
+> - `Letter Sealing` was introduced as an optional feature in August 2015.
+> - It was enabled by default in major LINE clients in 2016.
+> - Since 2021, it has been enabled by default in all regions and can no longer be turned off manually.
+> - For more information, see [issue #42](https://github.com/highesttt/matrix-line-messenger/issues/42).
