@@ -43,9 +43,9 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     pacman -Syu mingw-w64-x86_64-gcc cmake
     ```
 
-    Ensure you have [Docker](https://www.docker.com/get-started/) and [Docker Compose](https://docs.docker.com/compose/install/) installed on your system. OR if you want to build and run without Docker, ensure you have Go installed along with necessary build tools (like the olm library and bbctl).
+    Ensure you have [Docker](https://www.docker.com/get-started/) and [Docker Compose](https://docs.docker.com/compose/install/) installed on your system. OR if you want to build and run without Docker, ensure you have Go installed along with necessary build tools (like the olm library).
 
-    - Compile bbctl from source if you don't have it already:
+    - **For Beeper users**: Compile bbctl from source if you don't have it already:
 
     ```bash
     git clone https://github.com/beeper/bridge-manager.git
@@ -78,21 +78,36 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     mkdir data
     ```
 
-4. Create a configuration file using [bbctl](https://github.com/beeper/bridge-manager):
+4. Create a configuration file:
+
+    - **For Beeper users** (using [bbctl](https://github.com/beeper/bridge-manager)):
 
     ```bash
-    bbctl c --type bridgev2 sh-line > config.yaml
+    bbctl c --type bridgev2 sh-line > data/config.yaml
     ```
 
-5. Move the generated `config.yaml` into the `data` directory:
+    - **For self-hosted Matrix servers** (Synapse, Conduit, etc.):
+
+    First, build the bridge binary (see step 5), then generate the example config and registration:
 
     ```bash
-    mv config.yaml data/
+    # Generate example config
+    ./matrix-line -e -c data/config.yaml
+
+    # Edit data/config.yaml and set:
+    #   homeserver.address: http://localhost:8008  (your Matrix server URL)
+    #   homeserver.domain: your.domain.com         (your Matrix server domain)
+    #   appservice.database.uri: sqlite:///data/matrix-line.db  (or a postgres URI)
+
+    # Generate appservice registration
+    ./matrix-line -g -c data/config.yaml -r data/registration.yaml
     ```
 
-6. Build and run the bridge using Docker (use -d for detached mode):
+    Then register the appservice with your homeserver by adding the registration file path to your homeserver config (e.g. for Synapse, add it to `app_service_config_files` in `homeserver.yaml`) and restart the homeserver.
 
-    - __Using Docker Compose:__
+5. Build and run the bridge using Docker (use -d for detached mode):
+
+    - **Using Docker Compose:**
 
     ```bash
     docker compose up --build -d
@@ -104,7 +119,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     docker compose up -d
     ```
 
-    - __Building and running without Docker on Windows (MSYS2 and x86_64-w64-mingw32-gcc required)__
+    - **Building and running without Docker on Windows (MSYS2 and x86_64-w64-mingw32-gcc required)**
 
     ```bash
     # Clone and build olm if not already done
@@ -122,7 +137,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     ../matrix-line.exe
     ```
 
-    - __Other systems:__
+    - **Other systems:**
 
     ```bash
     ./build.sh
