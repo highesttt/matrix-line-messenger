@@ -69,7 +69,11 @@ func (lc *LineClient) refreshAndSave(ctx context.Context) error {
 }
 
 func (lc *LineClient) isRefreshRequired(err error) bool {
-	return strings.Contains(err.Error(), "\"code\":119") || strings.Contains(err.Error(), "Access token refresh required")
+	msg := err.Error()
+	return strings.Contains(msg, "\"code\":119") ||
+		strings.Contains(msg, "\"code\":10051") ||
+		strings.Contains(msg, "Access token refresh required") ||
+		strings.Contains(msg, "Authentication Failed")
 }
 
 func (lc *LineClient) Connect(ctx context.Context) {
@@ -241,12 +245,19 @@ func (lc *LineClient) ensureValidToken(ctx context.Context) error {
 	if err == nil {
 		return nil
 	}
+
 	if !lc.isRefreshRequired(err) {
-		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("GetProfile failed with non-auth error, continuing anyway")
-		return nil
+		if strings.Contains(err.Error(), "context deadline") ||
+			strings.Contains(err.Error(), "connection refused") ||
+			strings.Contains(err.Error(), "no such host") {
+			lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("GetProfile failed with network error, continuing anyway")
+			return nil
+		}
+		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("GetProfile failed with unexpected error, attempting recovery")
+	} else {
+		lc.UserLogin.Bridge.Log.Info().Msg("Access token expired, attempting refresh...")
 	}
 
-	lc.UserLogin.Bridge.Log.Info().Msg("Access token expired, attempting refresh...")
 	if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
 		lc.UserLogin.Bridge.Log.Info().Msg("Token refreshed successfully")
 		return nil
