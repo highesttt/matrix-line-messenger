@@ -9,7 +9,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
 > [!WARNING]
 > When updating from a version released before February 14, 2026,
-> please make sure to reset your configuration and log in again.
+> please make sure to reset your configuration and log in again.\
 > This is due to a change in the login flow that requires users to log
 > in again to fetch the necessary keys for E2EE decryption.
 
@@ -17,7 +17,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
 > [!NOTE]
 > Messages sent to the LINE Bot using Beeper Desktop may appear as
-> indefinitely sending.
+> indefinitely sending.\
 > Use Beeper Mobile to send commands to the LINE Bot account after
 > creating the chat with Beeper Desktop.
 
@@ -149,8 +149,8 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     cd ..
     # Move the .dll and .dll.a files in the matrix-line root directory
 
-    # Build the bridge. Make sure the olm .dll file(s) are in the root
-    # of the project.
+    # Build the bridge.
+    # Make sure the olm .dll file(s) are in the root of the project.
     ./build-windows.sh
     cd data
     ../matrix-line.exe
@@ -216,9 +216,9 @@ with `Error when logging in: Internal error`.
 >
 > - The `Letter Sealing` setting is only configurable from the LINE
 >   mobile app.
+> - Once the setting's turned on it can't be turned off.
 > - `Letter Sealing` was introduced as an optional feature in August 2015.
 > - It was enabled by default in major LINE clients in 2016.
-> - Since 2021, it has been enabled by default in all regions and can no
->   longer be turned off manually.
+> - Since 2021, it has been enabled by default in all regions.
 > - For more information, see
 >   [issue #42](https://github.com/highesttt/matrix-line-messenger/issues/42).
