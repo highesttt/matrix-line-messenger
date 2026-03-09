@@ -47,7 +47,11 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     pacman -Syu mingw-w64-x86_64-gcc cmake
     ```
 
-    Ensure you have [Docker](https://www.docker.com/get-started/) and [Docker Compose](https://docs.docker.com/compose/install/) installed on your system. OR if you want to build and run without Docker, ensure you have Go installed along with necessary build tools (like the olm library).
+    Ensure you have [Docker](https://www.docker.com/get-started/) and
+    [Docker Compose](https://docs.docker.com/compose/install/) installed
+    on your system. If you want to build and run without Docker, ensure
+    you have Go installed along with necessary build tools, such as the
+    olm library.
 
     - **For Beeper users**: Compile bbctl from source if you don't have it already:
 
@@ -94,7 +98,8 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
     - **For self-hosted Matrix servers** (Synapse, Conduit, etc.):
 
-    First, build the bridge binary (see step 5), then generate the example config and registration:
+    First, build the bridge binary (see step 5), then generate the
+    example config and registration:
 
     ```bash
     # Generate example config
@@ -109,7 +114,10 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     ./matrix-line -g -c data/config.yaml -r data/registration.yaml
     ```
 
-    Then register the appservice with your homeserver by adding the registration file path to your homeserver config (e.g. for Synapse, add it to `app_service_config_files` in `homeserver.yaml`) and restart the homeserver.
+    Then register the appservice with your homeserver by adding the
+    registration file path to your homeserver config. For Synapse, add it
+    to `app_service_config_files` in `homeserver.yaml`, then restart the
+    homeserver.
 
 5. Build and run the bridge using Docker (use -d for detached mode):
 
@@ -125,7 +133,8 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     docker compose up -d
     ```
 
-    - **Building and running without Docker on Windows (MSYS2 and x86_64-w64-mingw32-gcc required)**
+    - **Building and running without Docker on Windows** (MSYS2 and
+      `x86_64-w64-mingw32-gcc` required)
 
     ```bash
     # Clone and build olm if not already done
@@ -184,7 +193,7 @@ This bridge uses the email from your account information. If your
 account is older, you signed in using a phone number, or you signed in
 with Google, you may not have an email set for your LINE account.
 
-__How to set an email for your LINE account:__
+**How to set an email for your LINE account:**
 
 1. Open the LINE app on your mobile device.
 2. Go to `Settings` > `Account`.
@@ -196,7 +205,7 @@ This bridge requires LINE's end-to-end encryption feature,
 `Letter Sealing`, to be enabled. If it is disabled, the login will fail
 with `Error when logging in: Internal error`.
 
-__How to enable Letter Sealing:__
+**How to enable Letter Sealing:**
 
 1. Open the LINE app on your mobile device.
 2. Go to `Settings` > `Privacy`.
