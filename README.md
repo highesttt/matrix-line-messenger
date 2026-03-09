@@ -213,6 +213,7 @@ with `Error when logging in: Internal error`.
 4. Try logging in to the bridge again.
 
 > [!NOTE]
+>
 > - The `Letter Sealing` setting is only configurable from the LINE
 >   mobile app.
 > - Once the setting's turned on it can't be turned off.
