@@ -23,6 +23,18 @@ import (
 )
 
 func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
+	// Only process known content types; skip system messages (group created, member invited, etc.)
+	switch ContentType(msg.ContentType) {
+	case ContentText, ContentImage, ContentVideo, ContentSticker, ContentFile:
+		// supported — continue
+	default:
+		lc.UserLogin.Bridge.Log.Debug().
+			Int("content_type", msg.ContentType).
+			Str("msg_id", msg.ID).
+			Msg("Skipping unsupported content type")
+		return
+	}
+
 	senderID := makeUserID(msg.From)
 
 	portalIDStr := msg.From
@@ -541,6 +553,11 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 						},
 					},
 				}, nil
+			}
+
+			// Skip empty/whitespace-only text messages (system messages that fell through)
+			if strings.TrimSpace(unwrappedText) == "" {
+				return nil, nil
 			}
 
 			// Default to Text

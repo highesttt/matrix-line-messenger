@@ -109,7 +109,7 @@ func (lc *LineClient) syncChats(ctx context.Context) {
 		for _, chat := range chatsResp.Chats {
 			portalKey := networkid.PortalKey{ID: makePortalID(chat.ChatMid), Receiver: lc.UserLogin.ID}
 
-			info := lc.chatToChatInfo(&chat)
+			info := lc.chatToChatInfo(&chat, true)
 			lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.ChatResync{
 				EventMeta: simplevent.EventMeta{
 					Type:      bridgev2.RemoteEventChatResync,
@@ -122,7 +122,7 @@ func (lc *LineClient) syncChats(ctx context.Context) {
 	}
 }
 
-func (lc *LineClient) chatToChatInfo(chat *line.Chat) *bridgev2.ChatInfo {
+func (lc *LineClient) chatToChatInfo(chat *line.Chat, excludeFromTimeline bool) *bridgev2.ChatInfo {
 	var avatar *bridgev2.Avatar
 	if chat.PicturePath != "" {
 		avatar = &bridgev2.Avatar{
@@ -149,7 +149,7 @@ func (lc *LineClient) chatToChatInfo(chat *line.Chat) *bridgev2.ChatInfo {
 			members[0].PowerLevel = ptr.Ptr(100)
 		}
 		for m := range chat.Extra.GroupExtra.MemberMids {
-			if m == lc.Mid || m == string(lc.UserLogin.ID) {
+			if m == lc.Mid || m == string(lc.UserLogin.ID) || strings.HasPrefix(m, "c") || strings.HasPrefix(m, "r") {
 				continue
 			}
 			members = append(members, bridgev2.ChatMember{
@@ -160,7 +160,7 @@ func (lc *LineClient) chatToChatInfo(chat *line.Chat) *bridgev2.ChatInfo {
 			})
 		}
 		for m := range chat.Extra.GroupExtra.InviteeMids {
-			if m == lc.Mid || m == string(lc.UserLogin.ID) {
+			if m == lc.Mid || m == string(lc.UserLogin.ID) || strings.HasPrefix(m, "c") || strings.HasPrefix(m, "r") {
 				continue
 			}
 			members = append(members, bridgev2.ChatMember{
@@ -183,10 +183,15 @@ func (lc *LineClient) chatToChatInfo(chat *line.Chat) *bridgev2.ChatInfo {
 	}
 
 	return &bridgev2.ChatInfo{
-		Type:    &ct,
-		Name:    &name,
-		Avatar:  avatar,
-		Members: &bridgev2.ChatMemberList{IsFull: true, Members: members},
+		Type:   &ct,
+		Name:   &name,
+		Avatar: avatar,
+		Members: &bridgev2.ChatMemberList{
+			IsFull:                     true,
+			Members:                    members,
+			ExcludeChangesFromTimeline: excludeFromTimeline,
+		},
+		ExcludeChangesFromTimeline: excludeFromTimeline,
 	}
 }
 
@@ -320,7 +325,7 @@ func (lc *LineClient) handleOperation(ctx context.Context, op line.Operation) {
 
 	if OperationType(op.Type) == OpChatUpdate2 || OperationType(op.Type) == OpChatUpdate {
 		lc.UserLogin.Bridge.Log.Info().Str("chat_mid", op.Param1).Int("op_type", op.Type).Msg("Received chat update operation")
-		go lc.syncSingleChat(context.Background(), op.Param1)
+		go lc.syncSingleChat(context.Background(), op)
 	}
 
 	if OperationType(op.Type) == OpReadReceipt {
@@ -455,11 +460,19 @@ func (lc *LineClient) handleOperation(ctx context.Context, op line.Operation) {
 	}
 
 	if (OperationType(op.Type) == OpSendMessage || OperationType(op.Type) == OpReceiveMessage) && op.Message != nil {
+		// Handle group rename system messages (contentType=18, LOC_KEY="C_PN")
+		if op.Message.ContentType == 18 {
+			if op.Message.ContentMetadata != nil && op.Message.ContentMetadata["LOC_KEY"] == "C_PN" {
+				lc.handleGroupRename(op)
+			}
+			return
+		}
 		lc.queueIncomingMessage(op.Message, op.Type)
 	}
 }
 
-func (lc *LineClient) syncSingleChat(ctx context.Context, chatMid string) {
+func (lc *LineClient) syncSingleChat(ctx context.Context, op line.Operation) {
+	chatMid := op.Param1
 	client := line.NewClient(lc.AccessToken)
 	chatsResp, err := client.GetChats([]string{chatMid}, true, true)
 	if err != nil && lc.isRefreshRequired(err) {
@@ -478,30 +491,67 @@ func (lc *LineClient) syncSingleChat(ctx context.Context, chatMid string) {
 	chat := chatsResp.Chats[0]
 	portalKey := networkid.PortalKey{ID: makePortalID(chat.ChatMid), Receiver: lc.UserLogin.ID}
 
-	if chat.ChatName == "" && chat.Extra.GroupExtra != nil {
-		var missingMids []string
-		for mid := range chat.Extra.GroupExtra.MemberMids {
-			if _, ok := lc.contactCache[mid]; !ok && mid != string(lc.UserLogin.ID) {
-				missingMids = append(missingMids, mid)
-			}
-		}
-		if len(missingMids) > 0 {
-			res, err := client.GetContactsV2(missingMids)
-			if err == nil && res != nil && res.Contacts != nil {
-				for mid, wrapper := range res.Contacts {
-					lc.contactCache[mid] = wrapper.Contact
-				}
-			}
+	var avatar *bridgev2.Avatar
+	if chat.PicturePath != "" {
+		avatar = &bridgev2.Avatar{
+			ID: networkid.AvatarID(chat.PicturePath),
+			Get: func(ctx context.Context) ([]byte, error) {
+				return lc.GetAvatar(ctx, networkid.AvatarID(chat.PicturePath))
+			},
 		}
 	}
 
-	info := lc.chatToChatInfo(&chat)
-	lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.ChatResync{
+	// Use ChatInfoChange to only update avatar (and other non-name metadata).
+	// Name updates are handled by handleGroupRename from contentType=18 messages,
+	// which has the correct new name from LOC_ARGS.
+	// No sender is set on either event to avoid ghost creation/invite issues.
+	lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.ChatInfoChange{
 		EventMeta: simplevent.EventMeta{
-			Type:      bridgev2.RemoteEventChatResync,
+			Type:      bridgev2.RemoteEventChatInfoChange,
 			PortalKey: portalKey,
 			Timestamp: time.Now(),
 		},
-		ChatInfo: info,
+		ChatInfoChange: &bridgev2.ChatInfoChange{
+			ChatInfo: &bridgev2.ChatInfo{
+				Avatar: avatar,
+			},
+		},
+	})
+}
+
+func (lc *LineClient) handleGroupRename(op line.Operation) {
+	msg := op.Message
+	locArgs := msg.ContentMetadata["LOC_ARGS"]
+	// LOC_ARGS format: "<renamer_mid>\x1e<new_name>"
+	parts := strings.SplitN(locArgs, "\x1e", 2)
+	if len(parts) < 2 || parts[1] == "" {
+		return
+	}
+	newName := parts[1]
+
+	portalKey := networkid.PortalKey{ID: makePortalID(msg.To), Receiver: lc.UserLogin.ID}
+
+	ts, _ := msg.CreatedTime.Int64()
+	if ts == 0 {
+		ts = time.Now().UnixMilli()
+	}
+
+	lc.UserLogin.Bridge.Log.Debug().
+		Str("new_name", newName).
+		Str("chat_mid", msg.To).
+		Str("from", msg.From).
+		Msg("Handling group rename")
+
+	lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.ChatInfoChange{
+		EventMeta: simplevent.EventMeta{
+			Type:      bridgev2.RemoteEventChatInfoChange,
+			PortalKey: portalKey,
+			Timestamp: time.UnixMilli(ts),
+		},
+		ChatInfoChange: &bridgev2.ChatInfoChange{
+			ChatInfo: &bridgev2.ChatInfo{
+				Name: &newName,
+			},
+		},
 	})
 }
