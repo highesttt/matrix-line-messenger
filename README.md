@@ -8,14 +8,18 @@ A Matrix bridge for LINE Messenger using mautrix-go.\
 Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
 > [!WARNING]
-> When updating from a version released before February 14, 2026, please make sure to reset your configuration and log in again.\
-> This is due to a change in the login flow that requires users to log in again to fetch the necessary keys for E2EE decryption.
+> When updating from a version released before February 14, 2026,
+> please make sure to reset your configuration and log in again.\
+> This is due to a change in the login flow that requires users to log
+> in again to fetch the necessary keys for E2EE decryption.
 
 ## Known issues
 
 > [!NOTE]
-> Messages sent to the LINE Bot using Beeper Desktop may appear as indefinitely sending.\
-> Use Beeper Mobile to send commands to the LINE Bot account after creating the chat with Beeper Desktop.
+> Messages sent to the LINE Bot using Beeper Desktop may appear as
+> indefinitely sending.\
+> Use Beeper Mobile to send commands to the LINE Bot account after
+> creating the chat with Beeper Desktop.
 
 ## Features
 
@@ -43,7 +47,11 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     pacman -Syu mingw-w64-x86_64-gcc cmake
     ```
 
-    Ensure you have [Docker](https://www.docker.com/get-started/) and [Docker Compose](https://docs.docker.com/compose/install/) installed on your system. OR if you want to build and run without Docker, ensure you have Go installed along with necessary build tools (like the olm library).
+    Ensure you have [Docker](https://www.docker.com/get-started/) and
+    [Docker Compose](https://docs.docker.com/compose/install/) installed
+    on your system. If you want to build and run without Docker, ensure
+    you have Go installed along with necessary build tools, such as the
+    olm library.
 
     - **For Beeper users**: Compile bbctl from source if you don't have it already:
 
@@ -52,11 +60,13 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     cd bridge-manager
 
     # For windows users only:
-    # in cmd/bbctl/run.go, remove the following lines since msys2 is still seen as linux but Windows doesn't support Setpgid:
+    # In cmd/bbctl/run.go, remove the following lines because MSYS2 is
+    # still seen as Linux, but Windows doesn't support Setpgid:
 
     # if runtime.GOOS == "linux" {
     #     cmd.SysProcAttr = &syscall.SysProcAttr{
-    #         // Don't pass through signals to the bridge, we'll send a sigterm when we want to stop it.
+    #         // Don't pass through signals to the bridge.
+    #         // We'll send a sigterm when we want to stop it.
     #         // Causes weird issues on macOS, so limited to Linux.
     #         Setpgid: true,
     #     }
@@ -88,7 +98,8 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
     - **For self-hosted Matrix servers** (Synapse, Conduit, etc.):
 
-    First, build the bridge binary (see step 5), then generate the example config and registration:
+    First, build the bridge binary (see step 5), then generate the
+    example config and registration:
 
     ```bash
     # Generate example config
@@ -103,7 +114,10 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     ./matrix-line -g -c data/config.yaml -r data/registration.yaml
     ```
 
-    Then register the appservice with your homeserver by adding the registration file path to your homeserver config (e.g. for Synapse, add it to `app_service_config_files` in `homeserver.yaml`) and restart the homeserver.
+    Then register the appservice with your homeserver by adding the
+    registration file path to your homeserver config. For Synapse, add it
+    to `app_service_config_files` in `homeserver.yaml`, then restart the
+    homeserver.
 
 5. Build and run the bridge using Docker (use -d for detached mode):
 
@@ -119,19 +133,24 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
     docker compose up -d
     ```
 
-    - **Building and running without Docker on Windows (MSYS2 and x86_64-w64-mingw32-gcc required)**
+    - **Building and running without Docker on Windows** (MSYS2 and
+      `x86_64-w64-mingw32-gcc` required)
 
     ```bash
     # Clone and build olm if not already done
     git clone https://gitlab.matrix.org/matrix-org/olm.git
     cd olm
-    cmake -Bbuild -G "Unix Makefiles" -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ -DCMAKE_INSTALL_PREFIX=/mingw64
+    cmake -Bbuild -G "Unix Makefiles" \
+      -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+      -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+      -DCMAKE_INSTALL_PREFIX=/mingw64
     cmake --build build
     cmake --install build
     cd ..
     # Move the .dll and .dll.a files in the matrix-line root directory
 
-    # Build the bridge. Make sure to have the olm .dll file(s) in the root of the project.
+    # Build the bridge.
+    # Make sure the olm .dll file(s) are in the root of the project.
     ./build-windows.sh
     cd data
     ../matrix-line.exe
@@ -149,7 +168,9 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
 ### Using the LINE SelfHosted Bridge Bot
 
-1. Open the Matrix client of your choice and start a chat with `@sh-linebot:your.matrix.homeserver.domain`. (For local beeper bridges, use `@sh-linebot:beeper.local`)
+1. Open the Matrix client of your choice and start a chat with
+   `@sh-linebot:your.matrix.homeserver.domain`. For local Beeper
+   bridges, use `@sh-linebot:beeper.local`.
 2. Send the command `login` and follow the instructions to log in to your LINE account.
 
 or
@@ -158,15 +179,46 @@ or
 
 1. Open Beeper Desktop Settings
 2. Navigate to `Bridges`
-3. Click on the three dots next to your LINE Bridge and select `Experimental: Add an account`
+3. Click the three dots next to your LINE Bridge and select
+   `Experimental: Add an account`
 4. Follow the instructions to log in to your LINE account.
 
 ## Can't log in?
 
-This bridge uses the email from your Account information. If your account is an older account, you signed in using phone number or signed in with Google, you will not have an email set for your LINE account.
+There are two common reasons login can fail:
 
-### How to set an email for your LINE account
+### 1. No email is set on your LINE account
+
+This bridge uses the email from your account information. If your
+account is older, you signed in using a phone number, or you signed in
+with Google, you may not have an email set for your LINE account.
+
+**How to set an email for your LINE account:**
 
 1. Open the LINE app on your mobile device.
 2. Go to `Settings` > `Account`.
 3. Tap on `Email address` and set your email address.
+
+### 2. Letter Sealing (End-to-End Encryption) is disabled
+
+This bridge requires LINE's end-to-end encryption feature,
+`Letter Sealing`, to be enabled. If it is disabled, the login will fail
+with `Error when logging in: Internal error`.
+
+**How to enable Letter Sealing:**
+
+1. Open the LINE app on your mobile device.
+2. Go to `Settings` > `Privacy`.
+3. Turn `Letter Sealing` on (note: it can't be turned off once you do so)
+4. Try logging in to the bridge again.
+
+> [!NOTE]
+>
+> - The `Letter Sealing` setting is only configurable from the LINE
+>   mobile app.
+> - Once the setting's turned on it can't be turned off.
+> - `Letter Sealing` was introduced as an optional feature in August 2015.
+> - It was enabled by default in major LINE clients in 2016.
+> - Since 2021, it has been enabled by default in all regions.
+> - For more information, see
+>   [issue #42](https://github.com/highesttt/matrix-line-messenger/issues/42).
