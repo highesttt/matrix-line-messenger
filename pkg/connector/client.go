@@ -271,7 +271,16 @@ func (lc *LineClient) ensureValidToken(ctx context.Context) error {
 
 func (lc *LineClient) Disconnect() {}
 
-func (lc *LineClient) IsLoggedIn() bool { return lc.AccessToken != "" }
+func (lc *LineClient) IsLoggedIn() bool {
+	loggedIn := lc.AccessToken != ""
+	lc.UserLogin.Bridge.Log.Debug().
+		Bool("logged_in", loggedIn).
+		Int("token_len", len(lc.AccessToken)).
+		Str("login_id", string(lc.UserLogin.ID)).
+		Str("user_mxid", string(lc.UserLogin.UserMXID)).
+		Msg("IsLoggedIn check")
+	return loggedIn
+}
 
 func (lc *LineClient) LogoutRemote(ctx context.Context) {}
 

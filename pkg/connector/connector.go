@@ -313,7 +313,7 @@ func (ll *LineEmailLogin) finishLogin(ctx context.Context, res *line.LoginResult
 	token := res.AuthToken
 	refreshToken := ""
 	if res.TokenV3IssueResult != nil {
-		if token == "" {
+		if res.TokenV3IssueResult.AccessToken != "" {
 			token = res.TokenV3IssueResult.AccessToken
 		}
 		refreshToken = res.TokenV3IssueResult.RefreshToken
