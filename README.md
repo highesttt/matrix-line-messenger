@@ -97,12 +97,11 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
      bbctl r sh-line > data/registration.yaml
      ```
 
-     > [!IMPORTANT]
-     > The `bbctl r` step is required as it writes the registration tokens
-     > that Beeper's homeserver expects.
-     >
-     > If you re-run `bbctl c` later (for example to reset your config),
-     > re-sync tokens before starting the bridge:
+     ⚠️ The `bbctl r` step is required as it writes
+     the registration tokens that Beeper's homeserver
+     expects. If you re-run `bbctl c` later (for
+     example to reset your config), re-sync tokens
+     before starting the bridge:
 
      ```bash
      AS_TOKEN=$(grep '^as_token:' data/registration.yaml | awk '{print $2}')
