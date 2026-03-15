@@ -94,7 +94,22 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
     ```bash
     bbctl c --type bridgev2 sh-line > data/config.yaml
+    bbctl r sh-line > data/registration.yaml
     ```
+
+> [!IMPORTANT]
+> The `bbctl r` step is required as it writes the registration tokens
+> that Beeper's homeserver expects.
+>
+> If you re-run `bbctl c` later (for example to reset your config),
+> re-sync tokens before starting the bridge:
+
+```bash
+AS_TOKEN=$(grep '^as_token:' data/registration.yaml | awk '{print $2}')
+HS_TOKEN=$(grep '^hs_token:' data/registration.yaml | awk '{print $2}')
+sed -i "s|^[[:space:]]*as_token:.*|    as_token: ${AS_TOKEN}|" data/config.yaml
+sed -i "s|^[[:space:]]*hs_token:.*|    hs_token: ${HS_TOKEN}|" data/config.yaml
+```
 
     - **For self-hosted Matrix servers** (Synapse, Conduit, etc.):
 
