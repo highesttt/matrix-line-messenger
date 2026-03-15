@@ -186,6 +186,7 @@ Copy the olm `.dll` and `.dll.a` files to the project root, then:
 
 ```bash
 bbctl c --type bridgev2 sh-line > data/config.yaml
+bbctl r sh-line > data/registration.yaml
 ```
 
 **Self-hosted Matrix server:**
@@ -231,6 +232,7 @@ cd data
 
 ```bash
 bbctl c --type bridgev2 sh-line > data/config.yaml
+bbctl r sh-line > data/registration.yaml
 ```
 
 **Self-hosted Matrix server:**
