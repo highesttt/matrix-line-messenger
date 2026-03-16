@@ -15,6 +15,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
+	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
@@ -31,8 +32,8 @@ func (lc *LineClient) prefetchMessages(ctx context.Context) {
 	}
 
 	res, err := client.GetMessageBoxes(opts)
-	if err != nil && lc.isRefreshRequired(err) {
-		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
 			client = line.NewClient(lc.AccessToken)
 			res, err = client.GetMessageBoxes(opts)
 		}
@@ -71,8 +72,8 @@ func (lc *LineClient) prefetchMessages(ctx context.Context) {
 func (lc *LineClient) syncChats(ctx context.Context) {
 	client := line.NewClient(lc.AccessToken)
 	midsResp, err := client.GetAllChatMids(true, true)
-	if err != nil && lc.isRefreshRequired(err) {
-		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
 			client = line.NewClient(lc.AccessToken)
 			midsResp, err = client.GetAllChatMids(true, true)
 		}
@@ -95,8 +96,8 @@ func (lc *LineClient) syncChats(ctx context.Context) {
 		}
 		batch := allMids[i:end]
 		chatsResp, err := client.GetChats(batch, true, true)
-		if err != nil && lc.isRefreshRequired(err) {
-			if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+		if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+			if errRecover := lc.recoverToken(ctx); errRecover == nil {
 				client = line.NewClient(lc.AccessToken)
 				chatsResp, err = client.GetChats(batch, true, true)
 			}
@@ -240,12 +241,12 @@ func (lc *LineClient) pollLoop(ctx context.Context) {
 
 	lc.UserLogin.Bridge.Log.Info().Msg("Starting LINE SSE loop...")
 	rev, err := client.GetLastOpRevision()
-	if err != nil && lc.isRefreshRequired(err) {
-		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
 			client = line.NewClient(lc.AccessToken)
 			rev, err = client.GetLastOpRevision()
 		} else {
-			lc.UserLogin.Bridge.Log.Warn().Err(errRefresh).Msg("Failed to refresh token for getLastOpRevision")
+			lc.UserLogin.Bridge.Log.Warn().Err(errRecover).Msg("Failed to recover token for getLastOpRevision")
 		}
 	}
 	if err != nil {
@@ -307,10 +308,22 @@ func (lc *LineClient) pollLoop(ctx context.Context) {
 			if err != nil {
 				if err.Error() != "EOF" {
 					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("SSE Disconnected")
-					if strings.Contains(err.Error(), "SSE error: 401") || strings.Contains(err.Error(), "SSE error: 403") {
-						if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
-							client = line.NewClient(lc.AccessToken)
+
+					isAuthErr := strings.Contains(err.Error(), "SSE error: 401") ||
+						strings.Contains(err.Error(), "SSE error: 403") ||
+						lc.isLoggedOut(err)
+
+					if isAuthErr {
+						if errRecover := lc.recoverToken(ctx); errRecover != nil {
+							lc.UserLogin.Bridge.Log.Error().Err(errRecover).Msg("Failed to recover session, stopping poll loop")
+							lc.UserLogin.BridgeState.Send(status.BridgeState{
+								StateEvent: status.StateBadCredentials,
+								Error:      "line-logged-out",
+								Message:    "LINE session was invalidated (logged out by another client). Please re-authenticate the bridge.",
+							})
+							return
 						}
+						client = line.NewClient(lc.AccessToken)
 					}
 				}
 				time.Sleep(3 * time.Second)
@@ -475,8 +488,8 @@ func (lc *LineClient) syncSingleChat(ctx context.Context, op line.Operation) {
 	chatMid := op.Param1
 	client := line.NewClient(lc.AccessToken)
 	chatsResp, err := client.GetChats([]string{chatMid}, true, true)
-	if err != nil && lc.isRefreshRequired(err) {
-		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
 			client = line.NewClient(lc.AccessToken)
 			chatsResp, err = client.GetChats([]string{chatMid}, true, true)
 		}

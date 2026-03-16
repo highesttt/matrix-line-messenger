@@ -87,8 +87,8 @@ func (lc *LineClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) 
 	if strings.HasPrefix(lowerMid, "c") || strings.HasPrefix(lowerMid, "r") {
 		client := line.NewClient(lc.AccessToken)
 		res, err := client.GetChats([]string{mid}, true, true)
-		if err != nil && lc.isRefreshRequired(err) {
-			if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+		if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+			if errRecover := lc.recoverToken(ctx); errRecover == nil {
 				client = line.NewClient(lc.AccessToken)
 				res, err = client.GetChats([]string{mid}, true, true)
 			}
@@ -165,8 +165,8 @@ func (lc *LineClient) getContact(ctx context.Context, mid string) line.Contact {
 	if mid == lc.Mid || mid == string(lc.UserLogin.ID) {
 		client := line.NewClient(lc.AccessToken)
 		profile, err := client.GetProfile()
-		if err != nil && lc.isRefreshRequired(err) {
-			if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+		if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+			if errRecover := lc.recoverToken(ctx); errRecover == nil {
 				client = line.NewClient(lc.AccessToken)
 				profile, err = client.GetProfile()
 			}
@@ -181,8 +181,8 @@ func (lc *LineClient) getContact(ctx context.Context, mid string) line.Contact {
 
 	client := line.NewClient(lc.AccessToken)
 	res, err := client.GetContactsV2([]string{mid})
-	if err != nil && lc.isRefreshRequired(err) {
-		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
 			client = line.NewClient(lc.AccessToken)
 			res, err = client.GetContactsV2([]string{mid})
 		}

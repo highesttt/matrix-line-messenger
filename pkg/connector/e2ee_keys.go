@@ -24,12 +24,12 @@ func (lc *LineClient) fetchAndUnwrapGroupKey(ctx context.Context, chatMid string
 	}
 
 	sharedKey, err := fetch()
-	if err != nil && lc.isRefreshRequired(err) {
-		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
 			client = line.NewClient(lc.AccessToken)
 			sharedKey, err = fetch()
 		} else {
-			return fmt.Errorf("failed to refresh token before fetching group key: %w", errRefresh)
+			return fmt.Errorf("failed to recover token before fetching group key: %w", errRecover)
 		}
 	}
 	if err != nil {

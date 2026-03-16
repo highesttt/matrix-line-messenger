@@ -155,12 +155,12 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					imgData, err := client.DownloadOBS(oid, data.ID)
 
 					// Refresh token if we get a 401
-					if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err)) {
-						if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+					if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+						if errRecover := lc.recoverToken(ctx); errRecover == nil {
 							client = line.NewClient(lc.AccessToken)
 							imgData, err = client.DownloadOBS(oid, data.ID)
 						} else {
-							lc.UserLogin.Bridge.Log.Warn().Err(errRefresh).Msg("Failed to refresh token for OBS download")
+							lc.UserLogin.Bridge.Log.Warn().Err(errRecover).Msg("Failed to recover token for OBS download")
 						}
 					}
 
@@ -235,12 +235,12 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 				if oid != "" {
 					videoData, err := client.DownloadOBSWithSID(oid, data.ID, "emv")
 
-					if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err)) {
-						if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+					if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+						if errRecover := lc.recoverToken(ctx); errRecover == nil {
 							client = line.NewClient(lc.AccessToken)
 							videoData, err = client.DownloadOBSWithSID(oid, data.ID, "emv")
 						} else {
-							lc.UserLogin.Bridge.Log.Warn().Err(errRefresh).Msg("Failed to refresh token for OBS download")
+							lc.UserLogin.Bridge.Log.Warn().Err(errRecover).Msg("Failed to recover token for OBS download")
 						}
 					}
 

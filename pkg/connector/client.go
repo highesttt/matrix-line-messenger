@@ -72,6 +72,23 @@ func (lc *LineClient) isRefreshRequired(err error) bool {
 	return strings.Contains(err.Error(), "\"code\":119") || strings.Contains(err.Error(), "Access token refresh required")
 }
 
+func (lc *LineClient) isLoggedOut(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "V3_TOKEN_CLIENT_LOGGED_OUT") ||
+		strings.Contains(msg, "\"code\":10051")
+}
+
+// recoverToken attempts to restore a valid session by refreshing, then re-logging in.
+// Returns nil on success. On failure the caller should send StateBadCredentials.
+func (lc *LineClient) recoverToken(ctx context.Context) error {
+	if err := lc.refreshAndSave(ctx); err == nil {
+		lc.UserLogin.Bridge.Log.Info().Msg("Token recovered via refresh")
+		return nil
+	}
+	lc.UserLogin.Bridge.Log.Info().Msg("Refresh failed, attempting re-login with stored credentials...")
+	return lc.tryLogin(ctx)
+}
+
 func (lc *LineClient) Connect(ctx context.Context) {
 	if lc.peerKeys == nil {
 		lc.peerKeys = make(map[string]peerKeyInfo)
@@ -241,6 +258,12 @@ func (lc *LineClient) ensureValidToken(ctx context.Context) error {
 	if err == nil {
 		return nil
 	}
+
+	if lc.isLoggedOut(err) {
+		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Session invalidated (logged out by another client), attempting recovery...")
+		return lc.recoverToken(ctx)
+	}
+
 	if !lc.isRefreshRequired(err) {
 		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("GetProfile failed with non-auth error, continuing anyway")
 		return nil
