@@ -20,6 +20,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 > indefinitely sending.\
 > Use Beeper Mobile to send commands to the LINE Bot account after
 > creating the chat with Beeper Desktop.
+
 > [!WARNING]
 > The bridge identifies itself as a LINE Chrome Extension client. LINE
 > only allows one active Chrome Extension session at a time, so you
