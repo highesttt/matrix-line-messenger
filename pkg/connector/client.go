@@ -281,6 +281,37 @@ func (lc *LineClient) ensureValidToken(ctx context.Context) error {
 	return lc.tryLogin(ctx)
 }
 
+// canEncryptForChat probes whether E2EE is available for a given chat.
+// For 1:1 chats it checks if the peer has a public key (Letter Sealing ON).
+// For groups it checks if a group shared key exists.
+// Returns false (plaintext) when E2EE is not possible.
+func (lc *LineClient) canEncryptForChat(ctx context.Context, portalMid string) bool {
+	if lc.E2EE == nil {
+		return false
+	}
+
+	lowerMid := strings.ToLower(portalMid)
+	isGroup := strings.HasPrefix(lowerMid, "c") || strings.HasPrefix(lowerMid, "r")
+
+	if isGroup {
+		if err := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); err != nil {
+			lc.UserLogin.Bridge.Log.Info().Err(err).Str("chat_mid", portalMid).
+				Msg("E2EE not available for group (no group key), will send plaintext")
+			return false
+		}
+		return true
+	}
+
+	// 1:1: check if peer has an E2EE public key
+	_, _, err := lc.ensurePeerKey(ctx, portalMid)
+	if err != nil {
+		lc.UserLogin.Bridge.Log.Info().Err(err).Str("peer_mid", portalMid).
+			Msg("E2EE not available for peer (no public key), will send plaintext")
+		return false
+	}
+	return true
+}
+
 func (lc *LineClient) Disconnect() {}
 
 func (lc *LineClient) IsLoggedIn() bool { return lc.AccessToken != "" }

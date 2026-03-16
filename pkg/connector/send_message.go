@@ -28,26 +28,30 @@ import (
 )
 
 func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
-	if lc.E2EE == nil {
-		return nil, fmt.Errorf("E2EE not initialized; cannot send")
-	}
-
 	client := line.NewClient(lc.AccessToken)
 	portalMid := string(msg.Portal.ID)
 	fromMid := lc.midOrFallback()
 
+	// Probe whether E2EE is available for this chat.
+	// The LINE Chrome extension does the same: negotiate first, and if the peer
+	// or group doesn't support Letter Sealing, send plaintext.
+	useE2EE := lc.canEncryptForChat(ctx, portalMid)
+
 	var chunks []string
 	var err error
 	contentType := int(ContentText)
-	contentMetadata := map[string]string{
-		"e2eeVersion": "2",
+	contentMetadata := map[string]string{}
+	if useE2EE {
+		contentMetadata["e2eeVersion"] = "2"
 	}
 
 	var payload []byte
+	var textBody string // used for plaintext sends
 
 	switch msg.Content.MsgType {
 	case event.MsgText:
 		contentType = int(ContentText)
+		textBody = msg.Content.Body
 		// For groups, EncryptGroupMessage wraps in {"text": ...}
 		// For 1:1, we need JSON for EncryptMessageV2Raw
 		payload, err = json.Marshal(map[string]string{"text": msg.Content.Body})
@@ -72,20 +76,29 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			extension = "png"
 		}
 
-		encryptedData, keyMaterialB64, err := lc.encryptFileData(data)
-		if err != nil {
-			return nil, fmt.Errorf("failed to encrypt image data: %w", err)
+		var uploadData []byte
+		var keyMaterialB64 string
+
+		if useE2EE {
+			encryptedData, km, err := lc.encryptFileData(data)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encrypt image data: %w", err)
+			}
+			uploadData = encryptedData
+			keyMaterialB64 = km
+		} else {
+			uploadData = data
 		}
 
-		oid, err := client.UploadOBS(encryptedData)
+		oid, err := client.UploadOBS(uploadData)
 		if err != nil {
-			return nil, fmt.Errorf("failed to upload encrypted image to OBS: %w", err)
+			return nil, fmt.Errorf("failed to upload image to OBS: %w", err)
 		}
 
 		thumbnailData, thumbWidth, thumbHeight, err := generateThumbnail(data)
 		if err != nil {
 			lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to generate thumbnail, continuing without it")
-		} else {
+		} else if useE2EE {
 			keyMaterial, _ := base64.StdEncoding.DecodeString(keyMaterialB64)
 
 			// Derive keys using HKDF
@@ -130,17 +143,33 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 					Int("thumb_height", thumbHeight).
 					Msg("Uploaded preview thumbnail")
 			}
+		} else if len(thumbnailData) > 0 {
+			// Plaintext: upload unencrypted thumbnail
+			previewOID := fmt.Sprintf("%s__ud-preview", oid)
+			if err := client.UploadOBSWithOID(thumbnailData, previewOID); err != nil {
+				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload preview, continuing without it")
+			} else {
+				mediaThumbInfo := map[string]interface{}{
+					"width":  thumbWidth,
+					"height": thumbHeight,
+				}
+				if thumbInfoJSON, err := json.Marshal(mediaThumbInfo); err == nil {
+					contentMetadata["MEDIA_THUMB_INFO"] = string(thumbInfoJSON)
+				}
+			}
 		}
 
 		// metadata
 		contentType = int(ContentImage)
 		contentMetadata["OID"] = oid
 		contentMetadata["SID"] = "emi" // source ID for LINE images
-		contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(encryptedData))
+		contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(uploadData))
 		contentMetadata["contentType"] = fmt.Sprintf("%d", ContentImage)
 
-		// Add encryption key material to metadata (ENC_KM)
-		contentMetadata["ENC_KM"] = keyMaterialB64
+		if useE2EE {
+			// Add encryption key material to metadata (ENC_KM)
+			contentMetadata["ENC_KM"] = keyMaterialB64
+		}
 
 		// Add file name
 		fileName := msg.Content.Body
@@ -156,7 +185,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		// Add MEDIA_CONTENT_INFO for proper display
 		mediaContentInfo := map[string]interface{}{
 			"category":  "original",
-			"fileSize":  len(encryptedData),
+			"fileSize":  len(uploadData),
 			"extension": extension,
 		}
 
@@ -178,16 +207,24 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			return nil, fmt.Errorf("failed to download file from matrix: %w", err)
 		}
 
-		// Encrypt the file data
-		encryptedData, keyMaterialB64, err := lc.encryptFileData(data)
-		if err != nil {
-			return nil, fmt.Errorf("failed to encrypt file data: %w", err)
+		var uploadData []byte
+		var keyMaterialB64 string
+
+		if useE2EE {
+			encryptedData, km, err := lc.encryptFileData(data)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encrypt file data: %w", err)
+			}
+			uploadData = encryptedData
+			keyMaterialB64 = km
+		} else {
+			uploadData = data
 		}
 
-		// Upload encrypted file to LINE OBS with emf SID
-		oid, err := client.UploadOBSWithSID(encryptedData, "emf")
+		// Upload file to LINE OBS with emf SID
+		oid, err := client.UploadOBSWithSID(uploadData, "emf")
 		if err != nil {
-			return nil, fmt.Errorf("failed to upload encrypted file to OBS: %w", err)
+			return nil, fmt.Errorf("failed to upload file to OBS: %w", err)
 		}
 
 		// Prepare Metadata
@@ -203,20 +240,25 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		}
 		contentMetadata["FILE_NAME"] = fileName
 
-		// For files, encryption key and filename go in the E2EE encrypted payload
-		filePayload := map[string]string{
-			"keyMaterial": keyMaterialB64,
-			"fileName":    fileName,
+		if useE2EE {
+			// For files, encryption key and filename go in the E2EE encrypted payload
+			filePayload := map[string]string{
+				"keyMaterial": keyMaterialB64,
+				"fileName":    fileName,
+			}
+			payloadBytes, _ := json.Marshal(filePayload)
+			payload = payloadBytes
+		} else {
+			payload = []byte("{}")
 		}
-		payloadBytes, _ := json.Marshal(filePayload)
-		payload = payloadBytes
 
 		lc.UserLogin.Bridge.Log.Info().
 			Str("oid", oid).
 			Str("file_name", fileName).
-			Int("encrypted_size", len(encryptedData)).
+			Bool("e2ee", useE2EE).
+			Int("upload_size", len(uploadData)).
 			Int("original_size", len(data)).
-			Msg("Prepared E2EE file message")
+			Msg("Prepared file message")
 
 	case event.MsgVideo:
 		data, err := lc.UserLogin.Bridge.Bot.DownloadMedia(ctx, msg.Content.URL, msg.Content.File)
@@ -224,26 +266,37 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			return nil, fmt.Errorf("failed to download video from matrix: %w", err)
 		}
 
-		encryptedData, keyMaterialB64, err := lc.encryptVideoData(data)
-		if err != nil {
-			return nil, fmt.Errorf("failed to encrypt video data: %w", err)
+		var uploadData []byte
+		var keyMaterialB64 string
+
+		if useE2EE {
+			encryptedData, km, err := lc.encryptVideoData(data)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encrypt video data: %w", err)
+			}
+			uploadData = encryptedData
+			keyMaterialB64 = km
+		} else {
+			uploadData = data
 		}
 
-		oid, err := client.UploadOBSWithSID(encryptedData, "emv")
+		oid, err := client.UploadOBSWithSID(uploadData, "emv")
 		if err != nil {
-			return nil, fmt.Errorf("failed to upload encrypted video to OBS: %w", err)
+			return nil, fmt.Errorf("failed to upload video to OBS: %w", err)
 		}
 
-		chunkHashes := generateChunkHashes(encryptedData[:len(encryptedData)-32]) // Exclude HMAC
-		if len(chunkHashes) > 0 {
-			hashOID := fmt.Sprintf("%s__ud-hash", oid)
-			if err := client.UploadOBSWithOIDAndSID(chunkHashes, hashOID, "emv"); err != nil {
-				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload video hash, continuing without it")
-			} else {
-				lc.UserLogin.Bridge.Log.Info().
-					Str("hash_oid", hashOID).
-					Int("hash_size", len(chunkHashes)).
-					Msg("Uploaded video chunk hashes")
+		if useE2EE {
+			chunkHashes := generateChunkHashes(uploadData[:len(uploadData)-32]) // Exclude HMAC
+			if len(chunkHashes) > 0 {
+				hashOID := fmt.Sprintf("%s__ud-hash", oid)
+				if err := client.UploadOBSWithOIDAndSID(chunkHashes, hashOID, "emv"); err != nil {
+					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload video hash, continuing without it")
+				} else {
+					lc.UserLogin.Bridge.Log.Info().
+						Str("hash_oid", hashOID).
+						Int("hash_size", len(chunkHashes)).
+						Msg("Uploaded video chunk hashes")
+				}
 			}
 		}
 
@@ -258,7 +311,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			thumbnailData = thumbBuf.Bytes()
 		}
 
-		if len(thumbnailData) > 0 {
+		if len(thumbnailData) > 0 && useE2EE {
 			keyMaterial, _ := base64.StdEncoding.DecodeString(keyMaterialB64)
 			kdf := hkdf.New(sha256.New, keyMaterial, nil, []byte("FileEncryption"))
 			derived := make([]byte, 76)
@@ -300,6 +353,20 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 					Int("thumb_height", thumbHeight).
 					Msg("Uploaded video preview placeholder")
 			}
+		} else if len(thumbnailData) > 0 {
+			// Plaintext: upload unencrypted thumbnail
+			previewOID := fmt.Sprintf("%s__ud-preview", oid)
+			if err := client.UploadOBSWithOIDAndSID(thumbnailData, previewOID, "emv"); err != nil {
+				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload video preview, continuing without it")
+			} else {
+				mediaThumbInfo := map[string]interface{}{
+					"width":  thumbWidth,
+					"height": thumbHeight,
+				}
+				if thumbInfoJSON, err := json.Marshal(mediaThumbInfo); err == nil {
+					contentMetadata["MEDIA_THUMB_INFO"] = string(thumbInfoJSON)
+				}
+			}
 		}
 
 		contentType = int(ContentVideo)
@@ -307,7 +374,10 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		contentMetadata["SID"] = "emv"                              // Video SID
 		contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(data)) // Original unencrypted size
 		contentMetadata["contentType"] = fmt.Sprintf("%d", ContentVideo)
-		contentMetadata["ENC_KM"] = keyMaterialB64 // Required for OBS access
+
+		if useE2EE {
+			contentMetadata["ENC_KM"] = keyMaterialB64 // Required for OBS access
+		}
 
 		// Add duration if available (in milliseconds)
 		if msg.Content.Info.Duration > 0 {
@@ -319,51 +389,54 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 
 		lc.UserLogin.Bridge.Log.Info().
 			Str("oid", oid).
-			Str("enc_km", keyMaterialB64[:20]+"...").
-			Int("encrypted_size", len(encryptedData)).
-			Msg("Prepared E2EE video message")
+			Bool("e2ee", useE2EE).
+			Int("upload_size", len(uploadData)).
+			Msg("Prepared video message")
 
 	default:
 		return nil, fmt.Errorf("message type %s not implemented", msg.Content.MsgType)
 	}
 
-	lowerPortalID := strings.ToLower(portalMid)
-	isGroup := strings.HasPrefix(lowerPortalID, "c") || strings.HasPrefix(lowerPortalID, "r")
+	// Encrypt the message payload into chunks when E2EE is available
+	if useE2EE {
+		lowerPortalID := strings.ToLower(portalMid)
+		isGroup := strings.HasPrefix(lowerPortalID, "c") || strings.HasPrefix(lowerPortalID, "r")
 
-	if isGroup {
-		if errFetch := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); errFetch != nil {
-			lc.UserLogin.Bridge.Log.Debug().Err(errFetch).Str("chat_mid", portalMid).Msg("fetchAndUnwrapGroupKey before encrypt failed")
-		}
-		if contentType != int(ContentText) {
-			chunks, err = lc.E2EE.EncryptGroupMessageRaw(portalMid, fromMid, contentType, payload)
-		} else {
-			chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
-		}
-		if err != nil {
-			if errFetch := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); errFetch == nil {
-				if contentType != int(ContentText) {
-					chunks, err = lc.E2EE.EncryptGroupMessageRaw(portalMid, fromMid, contentType, payload)
-				} else {
-					chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
+		if isGroup {
+			if errFetch := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); errFetch != nil {
+				lc.UserLogin.Bridge.Log.Debug().Err(errFetch).Str("chat_mid", portalMid).Msg("fetchAndUnwrapGroupKey before encrypt failed")
+			}
+			if contentType != int(ContentText) {
+				chunks, err = lc.E2EE.EncryptGroupMessageRaw(portalMid, fromMid, contentType, payload)
+			} else {
+				chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
+			}
+			if err != nil {
+				if errFetch := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); errFetch == nil {
+					if contentType != int(ContentText) {
+						chunks, err = lc.E2EE.EncryptGroupMessageRaw(portalMid, fromMid, contentType, payload)
+					} else {
+						chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
+					}
 				}
 			}
-		}
-	} else {
-		// 1-1 Encryption
-		myRaw, myKeyID, errKey := lc.E2EE.MyKeyIDs()
-		if errKey != nil {
-			return nil, fmt.Errorf("missing own E2EE key: %w", errKey)
-		}
-		peerRaw, peerPub, errPeer := lc.ensurePeerKey(ctx, portalMid)
-		if errPeer != nil {
-			return nil, fmt.Errorf("failed to get peer key: %w", errPeer)
+		} else {
+			// 1-1 Encryption
+			myRaw, myKeyID, errKey := lc.E2EE.MyKeyIDs()
+			if errKey != nil {
+				return nil, fmt.Errorf("missing own E2EE key: %w", errKey)
+			}
+			peerRaw, peerPub, errPeer := lc.ensurePeerKey(ctx, portalMid)
+			if errPeer != nil {
+				return nil, fmt.Errorf("failed to get peer key: %w", errPeer)
+			}
+
+			chunks, err = lc.E2EE.EncryptMessageV2Raw(portalMid, fromMid, myKeyID, peerPub, myRaw, peerRaw, contentType, payload)
 		}
 
-		chunks, err = lc.E2EE.EncryptMessageV2Raw(portalMid, fromMid, myKeyID, peerPub, myRaw, peerRaw, contentType, payload)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("encrypt failed: %w", err)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt failed: %w", err)
+		}
 	}
 
 	now := time.Now().UnixMilli()
@@ -378,6 +451,10 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		HasContent:      contentType != int(ContentText), // True for images
 		ContentMetadata: contentMetadata,
 		Chunks:          chunks,
+	}
+
+	if !useE2EE && contentType == int(ContentText) {
+		lineMsg.Text = textBody
 	}
 
 	var relatedMsg *database.Message
