@@ -331,21 +331,19 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 	isGroup := strings.HasPrefix(lowerPortalID, "c") || strings.HasPrefix(lowerPortalID, "r")
 
 	if isGroup {
-		if errFetch := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); errFetch != nil {
-			lc.UserLogin.Bridge.Log.Debug().Err(errFetch).Str("chat_mid", portalMid).Msg("fetchAndUnwrapGroupKey before encrypt failed")
-		}
 		if contentType != int(ContentText) {
 			chunks, err = lc.E2EE.EncryptGroupMessageRaw(portalMid, fromMid, contentType, payload)
 		} else {
 			chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
 		}
 		if err != nil {
-			if errFetch := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); errFetch == nil {
-				if contentType != int(ContentText) {
-					chunks, err = lc.E2EE.EncryptGroupMessageRaw(portalMid, fromMid, contentType, payload)
-				} else {
-					chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
-				}
+			if errFetch := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); errFetch != nil {
+				return nil, wrapLetterSealingSendError(portalMid, true, errFetch)
+			}
+			if contentType != int(ContentText) {
+				chunks, err = lc.E2EE.EncryptGroupMessageRaw(portalMid, fromMid, contentType, payload)
+			} else {
+				chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
 			}
 		}
 	} else {
@@ -356,14 +354,14 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		}
 		peerRaw, peerPub, errPeer := lc.ensurePeerKey(ctx, portalMid)
 		if errPeer != nil {
-			return nil, fmt.Errorf("failed to get peer key: %w", errPeer)
+			return nil, wrapLetterSealingSendError(portalMid, false, fmt.Errorf("failed to get peer key: %w", errPeer))
 		}
 
 		chunks, err = lc.E2EE.EncryptMessageV2Raw(portalMid, fromMid, myKeyID, peerPub, myRaw, peerRaw, contentType, payload)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("encrypt failed: %w", err)
+		return nil, wrapLetterSealingSendError(portalMid, isGroup, fmt.Errorf("encrypt failed: %w", err))
 	}
 
 	now := time.Now().UnixMilli()

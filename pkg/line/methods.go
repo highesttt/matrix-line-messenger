@@ -127,6 +127,9 @@ func (c *Client) GetE2EEGroupSharedKey(chatMid string, groupKeyID int) (*E2EEGro
 		return nil, err
 	}
 	if wrapper.Code != 0 {
+		if strings.Contains(strings.ToLower(wrapper.Message), "not found") {
+			return nil, fmt.Errorf("%w: %s", ErrNoUsableE2EEGroupKey, wrapper.Message)
+		}
 		return nil, fmt.Errorf("getE2EEGroupSharedKey failed: %s", wrapper.Message)
 	}
 	return &wrapper.Data, nil
@@ -146,6 +149,9 @@ func (c *Client) GetLastE2EEGroupSharedKey(chatMid string) (*E2EEGroupSharedKey,
 		return nil, err
 	}
 	if wrapper.Code != 0 {
+		if strings.Contains(strings.ToLower(wrapper.Message), "not found") {
+			return nil, fmt.Errorf("%w: %s", ErrNoUsableE2EEGroupKey, wrapper.Message)
+		}
 		return nil, fmt.Errorf("getLastE2EEGroupSharedKey failed: %s", wrapper.Message)
 	}
 	return &wrapper.Data, nil
@@ -279,7 +285,7 @@ func parseE2EEPublicKey(rawData []byte) (*E2EEPublicKey, error) {
 		keyID = findInt64(data)
 	}
 	if pub == "" || keyID == 0 {
-		return nil, fmt.Errorf("missing fields (pub=%t keyID=%d raw=%s)", pub != "", keyID, string(rawData))
+		return nil, fmt.Errorf("%w: missing fields (pub=%t keyID=%d raw=%s)", ErrNoUsableE2EEPublicKey, pub != "", keyID, string(rawData))
 	}
 
 	return &E2EEPublicKey{
