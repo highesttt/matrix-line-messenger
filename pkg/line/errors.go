@@ -109,18 +109,27 @@ func IsNoUsableE2EEGroupKey(err error) bool {
 		strings.Contains(msg, "no group shared key returned")
 }
 
+func isLetterSealingLoginAPIError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var apiErr *apiError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+
+	return apiErr.HTTPStatus == 400 &&
+		apiErr.Code == 10051 &&
+		strings.EqualFold(apiErr.Message, "RESPONSE_ERROR") &&
+		strings.EqualFold(apiErr.Talk.Name, "TalkException") &&
+		apiErr.Talk.Code == 20 &&
+		strings.EqualFold(apiErr.Talk.Reason, "internal error")
+}
+
 func IsLetterSealingRequired(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, ErrLetterSealingRequired) {
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "polling returned without success") ||
-		(strings.Contains(msg, "api error 400") &&
-			strings.Contains(msg, "\"code\":10051") &&
-			strings.Contains(msg, "\"name\":\"talkexception\"") &&
-			strings.Contains(msg, "\"code\":20") &&
-			strings.Contains(msg, "\"reason\":\"internal error\""))
+	return errors.Is(err, ErrLetterSealingRequired)
 }
