@@ -239,7 +239,7 @@ func (c *Client) callRPC(service, method string, args ...interface{}) ([]byte, e
 	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+		return nil, parseAPIError(resp.StatusCode, respBody)
 	}
 
 	return respBody, nil

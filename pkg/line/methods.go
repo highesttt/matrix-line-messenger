@@ -119,20 +119,21 @@ func (c *Client) GetE2EEGroupSharedKey(chatMid string, groupKeyID int) (*E2EEGro
 		return nil, err
 	}
 	var wrapper struct {
-		Code    int                `json:"code"`
-		Message string             `json:"message"`
-		Data    E2EEGroupSharedKey `json:"data"`
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(resp, &wrapper); err != nil {
 		return nil, err
 	}
 	if wrapper.Code != 0 {
-		if strings.Contains(strings.ToLower(wrapper.Message), "not found") {
-			return nil, fmt.Errorf("%w: %s", ErrNoUsableE2EEGroupKey, wrapper.Message)
-		}
-		return nil, fmt.Errorf("getE2EEGroupSharedKey failed: %s", wrapper.Message)
+		return nil, parseE2EEGroupKeyError("getE2EEGroupSharedKey", wrapper.Message, wrapper.Data)
 	}
-	return &wrapper.Data, nil
+	var data E2EEGroupSharedKey
+	if err := json.Unmarshal(wrapper.Data, &data); err != nil {
+		return nil, err
+	}
+	return &data, nil
 }
 
 func (c *Client) GetLastE2EEGroupSharedKey(chatMid string) (*E2EEGroupSharedKey, error) {
@@ -141,20 +142,21 @@ func (c *Client) GetLastE2EEGroupSharedKey(chatMid string) (*E2EEGroupSharedKey,
 		return nil, err
 	}
 	var wrapper struct {
-		Code    int                `json:"code"`
-		Message string             `json:"message"`
-		Data    E2EEGroupSharedKey `json:"data"`
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(resp, &wrapper); err != nil {
 		return nil, err
 	}
 	if wrapper.Code != 0 {
-		if strings.Contains(strings.ToLower(wrapper.Message), "not found") {
-			return nil, fmt.Errorf("%w: %s", ErrNoUsableE2EEGroupKey, wrapper.Message)
-		}
-		return nil, fmt.Errorf("getLastE2EEGroupSharedKey failed: %s", wrapper.Message)
+		return nil, parseE2EEGroupKeyError("getLastE2EEGroupSharedKey", wrapper.Message, wrapper.Data)
 	}
-	return &wrapper.Data, nil
+	var data E2EEGroupSharedKey
+	if err := json.Unmarshal(wrapper.Data, &data); err != nil {
+		return nil, err
+	}
+	return &data, nil
 }
 
 // NegotiateE2EEPublicKey fetches (or renews) the public key of the person you're talking to (E2EE).

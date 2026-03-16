@@ -24,9 +24,6 @@ func (lc *LineClient) fetchAndUnwrapGroupKey(ctx context.Context, chatMid string
 	}
 
 	sharedKey, err := fetch()
-	if err != nil && lc.isLoggedOut(err) {
-		return wrapLetterSealingSendError(chatMid, true, fmt.Errorf("%w: %v", line.ErrNoUsableE2EEGroupKey, err))
-	}
 	if err != nil && lc.isRefreshRequired(err) {
 		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
 			client = line.NewClient(lc.AccessToken)
@@ -34,10 +31,10 @@ func (lc *LineClient) fetchAndUnwrapGroupKey(ctx context.Context, chatMid string
 		}
 	}
 	if err != nil {
-		return wrapLetterSealingSendError(chatMid, true, err)
+		return err
 	}
 	if sharedKey == nil {
-		return wrapLetterSealingSendError(chatMid, true, fmt.Errorf("%w: no group shared key returned for %s", line.ErrNoUsableE2EEGroupKey, chatMid))
+		return fmt.Errorf("%w: no group shared key returned for %s", line.ErrNoUsableE2EEGroupKey, chatMid)
 	}
 
 	lc.UserLogin.Bridge.Log.Debug().
