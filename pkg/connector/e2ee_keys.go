@@ -24,19 +24,17 @@ func (lc *LineClient) fetchAndUnwrapGroupKey(ctx context.Context, chatMid string
 	}
 
 	sharedKey, err := fetch()
-	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
-		if errRecover := lc.recoverToken(ctx); errRecover == nil {
+	if err != nil && lc.isRefreshRequired(err) {
+		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
 			client = line.NewClient(lc.AccessToken)
 			sharedKey, err = fetch()
-		} else {
-			return fmt.Errorf("failed to recover token before fetching group key: %w", errRecover)
 		}
 	}
 	if err != nil {
 		return err
 	}
 	if sharedKey == nil {
-		return fmt.Errorf("no group shared key returned for %s", chatMid)
+		return fmt.Errorf("%w: no group shared key returned for %s", line.ErrNoUsableE2EEGroupKey, chatMid)
 	}
 
 	lc.UserLogin.Bridge.Log.Debug().
@@ -68,7 +66,7 @@ func (lc *LineClient) fetchAndUnwrapGroupKey(ctx context.Context, chatMid string
 	return nil
 }
 
-func (lc *LineClient) ensurePeerKey(_ context.Context, mid string) (int, string, error) {
+func (lc *LineClient) ensurePeerKey(ctx context.Context, mid string) (int, string, error) {
 	if lc.peerKeys == nil {
 		lc.peerKeys = make(map[string]peerKeyInfo)
 	}
@@ -80,6 +78,12 @@ func (lc *LineClient) ensurePeerKey(_ context.Context, mid string) (int, string,
 	}
 	client := line.NewClient(lc.AccessToken)
 	res, err := client.NegotiateE2EEPublicKey(mid)
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+			client = line.NewClient(lc.AccessToken)
+			res, err = client.NegotiateE2EEPublicKey(mid)
+		}
+	}
 	if err != nil {
 		return 0, "", err
 	}
@@ -95,7 +99,7 @@ func (lc *LineClient) ensurePeerKey(_ context.Context, mid string) (int, string,
 	return pk.raw, pk.pub, nil
 }
 
-func (lc *LineClient) ensurePeerKeyByID(_ context.Context, mid string, keyID int) (int, string, error) {
+func (lc *LineClient) ensurePeerKeyByID(ctx context.Context, mid string, keyID int) (int, string, error) {
 	if lc.peerKeys == nil {
 		lc.peerKeys = make(map[string]peerKeyInfo)
 	}
@@ -109,6 +113,12 @@ func (lc *LineClient) ensurePeerKeyByID(_ context.Context, mid string, keyID int
 	client := line.NewClient(lc.AccessToken)
 	// keyVersion 1
 	res, err := client.GetE2EEPublicKey(mid, 1, keyID)
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRefresh := lc.refreshAndSave(ctx); errRefresh == nil {
+			client = line.NewClient(lc.AccessToken)
+			res, err = client.GetE2EEPublicKey(mid, 1, keyID)
+		}
+	}
 	if err != nil {
 		return 0, "", err
 	}
