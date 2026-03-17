@@ -3,10 +3,11 @@ package connector
 import (
 	"errors"
 
-	"github.com/highesttt/matrix-line-messenger/pkg/line"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
+
+	"github.com/highesttt/matrix-line-messenger/pkg/line"
 )
 
 func wrapLetterSealingSendError(portalMid string, isGroup bool, err error) error {
