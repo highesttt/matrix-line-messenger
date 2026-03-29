@@ -33,9 +33,10 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
 ## Features
 
-ℹ️ Only for accounts with [Letter Sealing](readme/LETTER_SEALING.md) turned `ON`.
+ℹ️ Works with both [Letter Sealing](readme/LETTER_SEALING.md) `ON` and `OFF` accounts.
 
-- [x] Messages (Text, Images, Videos, voice notes and any other kind of files)
+- [x] Messages (Text, Images, Videos, and Files)
+- [ ] Audio / voice notes (not yet supported)
 - [x] Read receipts
 - [x] Reaction support (Receive ONLY)
 - [x] Replies
@@ -303,22 +304,11 @@ with Google, you may not have an email set for your LINE account.
 2. Go to `Settings` > `Account`.
 3. Tap on `Email address` and set your email address.
 
-### 2. Letter Sealing (End-to-End Encryption) is disabled
+### 2. Letter Sealing (End-to-End Encryption)
 
-This bridge currently expects LINE's end-to-end encryption feature,
-`Letter Sealing`, to be enabled on the account used to log in.
+The bridge supports both `Letter Sealing` ON and OFF accounts. Messages
+to peers or groups without `Letter Sealing` are sent as plain text
+automatically.
 
-Until further notice, chats with users who have `Letter Sealing`
-disabled are also not fully supported for sending. In practice, the
-bridge currently works best when both the bridge account and the people
-you are messaging have `Letter Sealing` enabled.
-
-**How to enable Letter Sealing:**
-
-1. Open the LINE app on your mobile device.
-2. Go to `Settings` > `Privacy`.
-3. Turn `Letter Sealing` on (note: it can't be turned off once you do so)
-4. Try logging in to the bridge again.
-
-For current limitations, edge cases, and the full support checklist, see
-[readme/LETTER_SEALING.md](readme/LETTER_SEALING.md).
+For details on how the bridge handles different Letter Sealing
+combinations, see [readme/LETTER_SEALING.md](readme/LETTER_SEALING.md).
