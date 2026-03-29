@@ -198,6 +198,26 @@ func (lc *LineClient) getContact(ctx context.Context, mid string) line.Contact {
 			return wrapper.Contact
 		}
 	}
+
+	// Fall back to BuddyService for official/business accounts
+	lc.UserLogin.Bridge.Log.Debug().Str("mid", mid).Msg("Contact not found via GetContactsV2, trying BuddyService")
+	buddy, err := client.GetBuddyProfile(mid)
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
+			client = line.NewClient(lc.AccessToken)
+			buddy, err = client.GetBuddyProfile(mid)
+		}
+	}
+	if err == nil && buddy != nil {
+		lc.UserLogin.Bridge.Log.Debug().Str("mid", mid).Str("display_name", buddy.DisplayName).Str("picture_path", buddy.PicturePath).Msg("Got buddy profile")
+		contact := line.Contact{Mid: mid, DisplayName: buddy.DisplayName, PicturePath: buddy.PicturePath}
+		lc.contactCache[mid] = contact
+		return contact
+	}
+	if err != nil {
+		lc.UserLogin.Bridge.Log.Debug().Err(err).Str("mid", mid).Msg("BuddyService lookup also failed")
+	}
+
 	return line.Contact{Mid: mid, DisplayName: mid}
 }
 

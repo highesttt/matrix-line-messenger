@@ -358,6 +358,26 @@ func (c *Client) GetContactsV2(mids []string) (*ContactsResponse, error) {
 	return &wrapper.Data, nil
 }
 
+// GetBuddyProfile fetches the profile of a LINE official/business account (buddy).
+func (c *Client) GetBuddyProfile(mid string) (*BuddyProfile, error) {
+	resp, err := c.callRPC("BuddyService", "getBuddyProfile", mid)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int          `json:"code"`
+		Message string       `json:"message"`
+		Data    BuddyProfile `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("getBuddyProfile failed: %s", wrapper.Message)
+	}
+	return &wrapper.Data, nil
+}
+
 func (c *Client) GetAllChatMids(withMemberChats, withInvitedChats bool) (*GetAllChatMidsResponse, error) {
 	req := GetAllChatMidsRequest{
 		WithMemberChats:  withMemberChats,
