@@ -35,7 +35,8 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
 ℹ️ Works with both [Letter Sealing](readme/LETTER_SEALING.md) `ON` and `OFF` accounts.
 
-- [x] Messages (Text, Images, Videos, voice notes and any other kind of files)
+- [x] Messages (Text, Images, Videos, and Files)
+- [ ] Audio / voice notes (not yet supported)
 - [x] Read receipts
 - [x] Reaction support (Receive ONLY)
 - [x] Replies
