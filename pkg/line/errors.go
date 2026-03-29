@@ -1,9 +1,7 @@
 package line
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 )
 
@@ -50,35 +48,4 @@ func IsNoUsableE2EEGroupKey(err error) bool {
 		}
 	}
 	return false
-}
-
-type talkExceptionData struct {
-	Name    string `json:"name"`
-	Message string `json:"message"`
-	Code    int    `json:"code"`
-	Reason  string `json:"reason"`
-}
-
-func isNoUsableE2EEGroupKeyTalkException(message string, data talkExceptionData) bool {
-	if !strings.EqualFold(message, "RESPONSE_ERROR") || !strings.EqualFold(data.Name, "TalkException") {
-		return false
-	}
-	// Error 5 "not found" = no group shared key exists
-	// Error 98 "member settings off" = at least one member has LS disabled
-	return (data.Code == 5 && strings.EqualFold(data.Reason, "not found")) ||
-		(data.Code == 98 && strings.Contains(strings.ToLower(data.Reason), "member settings off"))
-}
-
-func parseTalkExceptionData(raw json.RawMessage) talkExceptionData {
-	var data talkExceptionData
-	_ = json.Unmarshal(raw, &data)
-	return data
-}
-
-func parseE2EEGroupKeyError(method, message string, rawData json.RawMessage) error {
-	talk := parseTalkExceptionData(rawData)
-	if isNoUsableE2EEGroupKeyTalkException(message, talk) {
-		return fmt.Errorf("%w: %s", ErrNoUsableE2EEGroupKey, talk.Reason)
-	}
-	return fmt.Errorf("%s failed: %s", method, message)
 }
