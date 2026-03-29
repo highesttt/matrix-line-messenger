@@ -66,8 +66,9 @@ func (lc *LineClient) GetCapabilities(ctx context.Context, portal *bridgev2.Port
 			event.MsgVideo: {
 				Caption: event.CapLevelRejected,
 				MimeTypes: map[string]event.CapabilitySupportLevel{
-					"video/mp4":  event.CapLevelFullySupported,
-					"video/webm": event.CapLevelFullySupported,
+					"video/mp4":        event.CapLevelFullySupported,
+					"video/webm":       event.CapLevelFullySupported,
+					"video/quicktime":  event.CapLevelFullySupported,
 				},
 			},
 			event.MsgAudio: {

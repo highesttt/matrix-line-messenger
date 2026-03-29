@@ -520,17 +520,26 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 
 	// For plain media: upload media to r/talk/m/{serverMessageId} after sending
 	if plainText && plainMediaData != nil && sentMsg.ID != "" {
-		if err := client.UploadOBSWithOIDAndSID(plainMediaData, sentMsg.ID, "m"); err != nil {
+		obsType := "image"
+		switch contentType {
+		case int(ContentVideo):
+			obsType = "video"
+		case int(ContentFile):
+			obsType = "file"
+		}
+
+		if err := client.UploadOBSPlain(plainMediaData, sentMsg.ID, obsType); err != nil {
 			return nil, fmt.Errorf("failed to upload plain media to OBS: %w", err)
 		}
 		lc.UserLogin.Bridge.Log.Info().
 			Str("message_id", sentMsg.ID).
+			Str("obs_type", obsType).
 			Int("media_size", len(plainMediaData)).
 			Msg("Uploaded plain media after sending")
 
 		if plainThumbData != nil {
 			previewID := fmt.Sprintf("%s__ud-preview", sentMsg.ID)
-			if err := client.UploadOBSWithOIDAndSID(plainThumbData, previewID, "m"); err != nil {
+			if err := client.UploadOBSPlain(plainThumbData, previewID, obsType); err != nil {
 				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload plain media thumbnail, continuing without it")
 			}
 		}

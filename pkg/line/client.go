@@ -452,12 +452,57 @@ const OBSBaseURL = "https://obs.line-apps.com"
 
 // obsTypeFromSID maps the OBS SID to the correct "type" field in X-Obs-Params.
 // Encrypted endpoints (emi/emv/emf/ema) expect "file" since the data is opaque binary.
-// The plain "m" endpoint expects the actual content type.
+// The plain "m" endpoint defaults to "image" — use UploadOBSPlain for other types.
 func obsTypeFromSID(sid string) string {
 	if sid == "m" {
 		return "image"
 	}
 	return "file"
+}
+
+// UploadOBSPlain uploads plain (non-E2EE) media to a specific OID via the "m" endpoint.
+// obsType should be "image", "video", "audio", or "file".
+func (c *Client) UploadOBSPlain(data []byte, oid string, obsType string) error {
+	obsToken, err := c.AcquireEncryptedAccessToken()
+	if err != nil {
+		return fmt.Errorf("failed to acquire OBS token: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/r/talk/m/%s", OBSBaseURL, oid)
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("failed to create OBS request: %w", err)
+	}
+
+	obsParams := map[string]string{
+		"ver":  "2.0",
+		"name": fmt.Sprintf("%d", time.Now().UnixMilli()),
+		"type": obsType,
+	}
+	obsParamsJSON, _ := json.Marshal(obsParams)
+	obsParamsB64 := base64.StdEncoding.EncodeToString(obsParamsJSON)
+
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("x-line-application", "CHROMEOS\t3.7.1\tChrome_OS\t1")
+	req.Header.Set("x-lal", "en_US")
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Obs-Params", obsParamsB64)
+	req.Header.Set("x-line-access", obsToken)
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("OBS upload request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		return fmt.Errorf("OBS upload failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	return nil
 }
 
 // UploadOBS uploads media to LINE's Object Storage and returns the Object ID (OID).
