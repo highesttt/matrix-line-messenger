@@ -22,6 +22,87 @@ import (
 	"github.com/highesttt/matrix-line-messenger/pkg/line"
 )
 
+func (lc *LineClient) syncDMChats(ctx context.Context) {
+	client := line.NewClient(lc.AccessToken)
+	opts := line.MessageBoxesOptions{
+		ActiveOnly:                     true,
+		MessageBoxCountLimit:           100,
+		WithUnreadCount:                false,
+		LastMessagesPerMessageBoxCount: 0,
+	}
+
+	res, err := client.GetMessageBoxes(opts)
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
+			client = line.NewClient(lc.AccessToken)
+			res, err = client.GetMessageBoxes(opts)
+		}
+	}
+	if err != nil {
+		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to fetch message boxes for DM sync")
+		return
+	}
+
+	for _, box := range res.MessageBoxes {
+		mid := box.ID
+		lowerMid := strings.ToLower(mid)
+		// Skip group chats — they're handled by syncChats
+		if strings.HasPrefix(lowerMid, "c") || strings.HasPrefix(lowerMid, "r") {
+			continue
+		}
+
+		contact := lc.getContact(ctx, mid)
+		var avatar *bridgev2.Avatar
+		if contact.PicturePath != "" {
+			picturePath := contact.PicturePath
+			avatar = &bridgev2.Avatar{
+				ID: networkid.AvatarID(picturePath),
+				Get: func(ctx context.Context) ([]byte, error) {
+					return lc.GetAvatar(ctx, networkid.AvatarID(picturePath))
+				},
+			}
+		}
+
+		dmType := database.RoomTypeDM
+		chatName := contact.EffectiveDisplayName()
+		portalKey := networkid.PortalKey{ID: makePortalID(mid), Receiver: lc.UserLogin.ID}
+		lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.ChatResync{
+			EventMeta: simplevent.EventMeta{
+				Type:      bridgev2.RemoteEventChatResync,
+				PortalKey: portalKey,
+				Timestamp: time.Now(),
+			},
+			ChatInfo: &bridgev2.ChatInfo{
+				Type:   &dmType,
+				Name:   &chatName,
+				Avatar: avatar,
+				Members: &bridgev2.ChatMemberList{
+					IsFull:                     true,
+					ExcludeChangesFromTimeline: true,
+					Members: []bridgev2.ChatMember{
+						{
+							EventSender: bridgev2.EventSender{
+								IsFromMe: true,
+								Sender:   networkid.UserID(lc.UserLogin.ID),
+							},
+							Membership: event.MembershipJoin,
+							PowerLevel: ptr.Ptr(100),
+						},
+						{
+							EventSender: bridgev2.EventSender{
+								Sender: makeUserID(mid),
+							},
+							Membership: event.MembershipJoin,
+							PowerLevel: ptr.Ptr(0),
+						},
+					},
+				},
+				ExcludeChangesFromTimeline: true,
+			},
+		})
+	}
+}
+
 func (lc *LineClient) prefetchMessages(ctx context.Context) {
 	client := line.NewClient(lc.AccessToken)
 	opts := line.MessageBoxesOptions{
@@ -278,6 +359,7 @@ func (lc *LineClient) pollLoop(ctx context.Context) {
 				}
 			}
 			go lc.syncChats(ctx)
+			go lc.syncDMChats(ctx)
 			go lc.prefetchMessages(ctx)
 			return
 		}

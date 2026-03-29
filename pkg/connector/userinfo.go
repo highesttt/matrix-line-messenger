@@ -9,6 +9,7 @@ import (
 	"go.mau.fi/util/ptr"
 
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 
@@ -112,8 +113,11 @@ func (lc *LineClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) 
 			},
 		}
 	}
+	dmType := database.RoomTypeDM
+	chatName := contact.EffectiveDisplayName()
 	return &bridgev2.ChatInfo{
-		Name:   &contact.DisplayName,
+		Type:   &dmType,
+		Name:   &chatName,
 		Avatar: avatar,
 		Members: &bridgev2.ChatMemberList{
 			IsFull: true,
@@ -149,9 +153,10 @@ func (lc *LineClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*
 			},
 		}
 	}
+	name := contact.EffectiveDisplayName()
 	return &bridgev2.UserInfo{
 		Identifiers: []string{string(ghost.ID)},
-		Name:        &contact.DisplayName,
+		Name:        &name,
 		Avatar:      avatar,
 	}, nil
 }
