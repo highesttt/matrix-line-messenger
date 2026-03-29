@@ -173,10 +173,19 @@ type ContactWrapper struct {
 }
 
 type Contact struct {
-	Mid           string `json:"mid"`
-	DisplayName   string `json:"displayName"`
-	StatusMessage string `json:"statusMessage"`
-	PicturePath   string `json:"picturePath"`
+	Mid                     string `json:"mid"`
+	DisplayName             string `json:"displayName"`
+	DisplayNameOverridden   string `json:"displayNameOverridden"`
+	StatusMessage           string `json:"statusMessage"`
+	PicturePath             string `json:"picturePath"`
+}
+
+// EffectiveDisplayName returns the custom name if set, otherwise the original display name.
+func (c Contact) EffectiveDisplayName() string {
+	if c.DisplayNameOverridden != "" {
+		return c.DisplayNameOverridden
+	}
+	return c.DisplayName
 }
 
 type BuddyProfile struct {

@@ -119,9 +119,10 @@ func (lc *LineClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) 
 		}
 	}
 	dmType := database.RoomTypeDM
+	chatName := contact.EffectiveDisplayName()
 	return &bridgev2.ChatInfo{
 		Type:   &dmType,
-		Name:   &contact.DisplayName,
+		Name:   &chatName,
 		Avatar: avatar,
 		Members: &bridgev2.ChatMemberList{
 			IsFull: true,
@@ -158,9 +159,10 @@ func (lc *LineClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*
 			},
 		}
 	}
+	name := contact.EffectiveDisplayName()
 	return &bridgev2.UserInfo{
 		Identifiers: []string{string(ghost.ID)},
-		Name:        &contact.DisplayName,
+		Name:        &name,
 		Avatar:      avatar,
 	}, nil
 }

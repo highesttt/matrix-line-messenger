@@ -64,6 +64,7 @@ func (lc *LineClient) syncDMChats(ctx context.Context) {
 		}
 
 		dmType := database.RoomTypeDM
+		chatName := contact.EffectiveDisplayName()
 		portalKey := networkid.PortalKey{ID: makePortalID(mid), Receiver: lc.UserLogin.ID}
 		lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.ChatResync{
 			EventMeta: simplevent.EventMeta{
@@ -73,7 +74,7 @@ func (lc *LineClient) syncDMChats(ctx context.Context) {
 			},
 			ChatInfo: &bridgev2.ChatInfo{
 				Type:   &dmType,
-				Name:   &contact.DisplayName,
+				Name:   &chatName,
 				Avatar: avatar,
 				Members: &bridgev2.ChatMemberList{
 					IsFull:                     true,
