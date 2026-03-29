@@ -28,12 +28,15 @@ type LineClient struct {
 	reqSeqMu    sync.Mutex
 	sentReqSeqs map[int]time.Time
 
+	noE2EEGroups map[string]time.Time // chatMid -> when group E2EE failure was cached
 	contactCache map[string]line.Contact
 }
 
 type peerKeyInfo struct {
-	raw int
-	pub string
+	raw       int
+	pub       string
+	noE2EE    bool      // true if peer has Letter Sealing off
+	checkedAt time.Time // when noE2EE was last verified
 }
 
 var _ bridgev2.NetworkAPI = (*LineClient)(nil)

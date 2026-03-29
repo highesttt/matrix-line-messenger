@@ -43,7 +43,9 @@ func (lc *LineConnector) GetBridgeInfoVersion() (info, capabilities int) {
 }
 
 func (lc *LineConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {
-	return &bridgev2.NetworkGeneralCapabilities{}
+	return &bridgev2.NetworkGeneralCapabilities{
+		AggressiveUpdateInfo: true,
+	}
 }
 
 func (lc *LineConnector) GetName() bridgev2.BridgeName {
@@ -117,11 +119,10 @@ type LineEmailLogin struct {
 	Password    string
 	Verifier    string
 	AwaitingPIN bool
-
-	pollResult chan *line.LoginResult
-	pollErr    chan error
-	polling    bool
-	mu         sync.Mutex
+	pollResult  chan *line.LoginResult
+	pollErr     chan error
+	polling     bool
+	mu          sync.Mutex
 }
 
 var _ bridgev2.LoginProcessUserInput = (*LineEmailLogin)(nil)
