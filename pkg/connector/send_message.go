@@ -3,21 +3,13 @@ package connector
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
 	"image/jpeg"
-	"io"
 	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/crypto/hkdf"
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -72,6 +64,11 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			extension = "png"
 		}
 
+		// Flatten transparent PNGs onto white background (matches LINE native client)
+		if mimeType == "image/png" {
+			data = flattenPNGTransparency(data)
+		}
+
 		encryptedData, keyMaterialB64, err := lc.encryptFileData(data)
 		if err != nil {
 			return nil, fmt.Errorf("failed to encrypt image data: %w", err)
@@ -85,34 +82,11 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		thumbnailData, thumbWidth, thumbHeight, err := generateThumbnail(data)
 		if err != nil {
 			lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to generate thumbnail, continuing without it")
+		} else if thumbToUpload, err := encryptThumbnail(thumbnailData, keyMaterialB64); err != nil {
+			lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to encrypt thumbnail, continuing without it")
 		} else {
-			keyMaterial, _ := base64.StdEncoding.DecodeString(keyMaterialB64)
-
-			// Derive keys using HKDF
-			kdf := hkdf.New(sha256.New, keyMaterial, nil, []byte("FileEncryption"))
-			derived := make([]byte, 76)
-			io.ReadFull(kdf, derived)
-
-			encKey := derived[0:32]
-			macKey := derived[32:64]
-			nonce := derived[64:76]
-
-			counter := make([]byte, 16)
-			copy(counter, nonce)
-
-			block, _ := aes.NewCipher(encKey)
-			stream := cipher.NewCTR(block, counter)
-
-			encryptedThumb := make([]byte, len(thumbnailData))
-			stream.XORKeyStream(encryptedThumb, thumbnailData)
-
-			h := hmac.New(sha256.New, macKey)
-			h.Write(encryptedThumb)
-			encryptedThumbWithHMAC := append(encryptedThumb, h.Sum(nil)...)
-
-			// Upload preview
 			previewOID := fmt.Sprintf("%s__ud-preview", oid)
-			if err := client.UploadOBSWithOID(encryptedThumbWithHMAC, previewOID); err != nil {
+			if err := client.UploadOBSWithOID(thumbToUpload, previewOID); err != nil {
 				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload preview, continuing without it")
 			} else {
 				mediaThumbInfo := map[string]interface{}{
@@ -143,13 +117,9 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		contentMetadata["ENC_KM"] = keyMaterialB64
 
 		// Add file name
-		fileName := msg.Content.Body
+		fileName := msg.Content.GetFileName()
 		if fileName == "" {
-			if isGif {
-				fileName = "animation.gif"
-			} else {
-				fileName = "image.jpg"
-			}
+			fileName = "image." + extension
 		}
 		contentMetadata["FILE_NAME"] = fileName
 
@@ -169,7 +139,8 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			contentMetadata["MEDIA_CONTENT_INFO"] = string(mediaInfoJSON)
 		}
 
-		payload = []byte("{}")
+		imgPayload := map[string]string{"keyMaterial": keyMaterialB64}
+		payload, _ = json.Marshal(imgPayload)
 
 	case event.MsgFile:
 		// Generic files
@@ -197,7 +168,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(data)) // Original unencrypted size
 		contentMetadata["contentType"] = fmt.Sprintf("%d", ContentFile)
 
-		fileName := msg.Content.Body
+		fileName := msg.Content.GetFileName()
 		if fileName == "" {
 			fileName = "file.bin"
 		}
@@ -259,46 +230,28 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		}
 
 		if len(thumbnailData) > 0 {
-			keyMaterial, _ := base64.StdEncoding.DecodeString(keyMaterialB64)
-			kdf := hkdf.New(sha256.New, keyMaterial, nil, []byte("FileEncryption"))
-			derived := make([]byte, 76)
-			io.ReadFull(kdf, derived)
-
-			encKey := derived[0:32]
-			macKey := derived[32:64]
-			nonce := derived[64:76]
-
-			counter := make([]byte, 16)
-			copy(counter, nonce)
-
-			block, _ := aes.NewCipher(encKey)
-			stream := cipher.NewCTR(block, counter)
-
-			encryptedThumb := make([]byte, len(thumbnailData))
-			stream.XORKeyStream(encryptedThumb, thumbnailData)
-
-			h := hmac.New(sha256.New, macKey)
-			h.Write(encryptedThumb)
-			encryptedThumbWithHMAC := append(encryptedThumb, h.Sum(nil)...)
-
-			previewOID := fmt.Sprintf("%s__ud-preview", oid)
-			if err := client.UploadOBSWithOIDAndSID(encryptedThumbWithHMAC, previewOID, "emv"); err != nil {
-				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload video preview, continuing without it")
+			if thumbToUpload, err := encryptThumbnail(thumbnailData, keyMaterialB64); err != nil {
+				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to encrypt video thumbnail, continuing without it")
 			} else {
-				mediaThumbInfo := map[string]interface{}{
-					"width":  thumbWidth,
-					"height": thumbHeight,
-				}
-				if thumbInfoJSON, err := json.Marshal(mediaThumbInfo); err == nil {
-					contentMetadata["MEDIA_THUMB_INFO"] = string(thumbInfoJSON)
-				}
+				previewOID := fmt.Sprintf("%s__ud-preview", oid)
+				if err := client.UploadOBSWithOIDAndSID(thumbToUpload, previewOID, "emv"); err != nil {
+					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload video preview, continuing without it")
+				} else {
+					mediaThumbInfo := map[string]interface{}{
+						"width":  thumbWidth,
+						"height": thumbHeight,
+					}
+					if thumbInfoJSON, err := json.Marshal(mediaThumbInfo); err == nil {
+						contentMetadata["MEDIA_THUMB_INFO"] = string(thumbInfoJSON)
+					}
 
-				lc.UserLogin.Bridge.Log.Info().
-					Str("preview_oid", previewOID).
-					Int("preview_size", len(encryptedThumbWithHMAC)).
-					Int("thumb_width", thumbWidth).
-					Int("thumb_height", thumbHeight).
-					Msg("Uploaded video preview placeholder")
+					lc.UserLogin.Bridge.Log.Info().
+						Str("preview_oid", previewOID).
+						Int("preview_size", len(thumbToUpload)).
+						Int("thumb_width", thumbWidth).
+						Int("thumb_height", thumbHeight).
+						Msg("Uploaded video preview")
+				}
 			}
 		}
 
@@ -314,12 +267,11 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			contentMetadata["DURATION"] = fmt.Sprintf("%d", msg.Content.Info.Duration)
 		}
 
-		//Empty payload like images
-		payload = []byte("{}")
+		vidPayload := map[string]string{"keyMaterial": keyMaterialB64}
+		payload, _ = json.Marshal(vidPayload)
 
 		lc.UserLogin.Bridge.Log.Info().
 			Str("oid", oid).
-			Str("enc_km", keyMaterialB64[:20]+"...").
 			Int("encrypted_size", len(encryptedData)).
 			Msg("Prepared E2EE video message")
 
