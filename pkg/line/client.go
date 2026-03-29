@@ -656,23 +656,46 @@ func (c *Client) DownloadOBSWithSID(oid string, messageID string, sid string) ([
 		req.Header.Set("x-talk-meta", talkMeta)
 	}
 
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("OBS download request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	// Retry loop for 202 (media still processing, e.g. video transcoding)
+	maxRetries := 5
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("OBS download request failed: %w", err)
+		}
 
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("OBS download failed (%d): %s", resp.StatusCode, string(body))
+		if resp.StatusCode == 202 && attempt < maxRetries {
+			resp.Body.Close()
+			time.Sleep(2 * time.Second)
+			// Rebuild request for retry
+			req, _ = http.NewRequest("GET", url, nil)
+			req.Header.Set("User-Agent", UserAgent)
+			if obsToken != "" {
+				req.Header.Set("x-line-access", obsToken)
+			}
+			if messageID != "" {
+				talkMeta := c.constructTalkMeta(messageID)
+				req.Header.Set("x-talk-meta", talkMeta)
+			}
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("OBS download failed (%d): %s", resp.StatusCode, string(body))
+		}
+
+		data, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read OBS response body: %w", err)
+		}
+
+		return data, nil
 	}
 
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read OBS response body: %w", err)
-	}
-
-	return data, nil
+	return nil, fmt.Errorf("OBS download failed: media still processing after %d retries", maxRetries)
 }
 
 // this builds x-talk-meta
