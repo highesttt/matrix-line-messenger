@@ -117,6 +117,7 @@ type LineEmailLogin struct {
 	Password    string
 	Verifier    string
 	AwaitingPIN bool
+	NoE2EE      bool // True when login fell back to non-E2EE (LSOFF account)
 
 	pollResult chan *line.LoginResult
 	pollErr    chan error
@@ -254,6 +255,7 @@ func (ll *LineEmailLogin) handleLoginResponse(ctx context.Context, res *line.Log
 
 	if (res.Type == 3 || res.Type == 0) && res.Verifier != "" {
 		ll.Verifier = res.Verifier
+		ll.NoE2EE = res.NoE2EE
 		ll.AwaitingPIN = false
 		instructions := "Please open the LINE app on your mobile device to complete the login."
 		pin := res.Pin
@@ -271,7 +273,7 @@ func (ll *LineEmailLogin) handleLoginResponse(ctx context.Context, res *line.Log
 		ll.pollErr = make(chan error, 1)
 		go func() {
 			client := line.NewClient("")
-			res, err := client.WaitForLogin(ll.Verifier)
+			res, err := client.WaitForLogin(ll.Verifier, ll.NoE2EE)
 			if err != nil {
 				ll.pollErr <- err
 			} else {

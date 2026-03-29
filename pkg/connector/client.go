@@ -212,7 +212,7 @@ func (lc *LineClient) tryLogin(ctx context.Context) error {
 
 		lc.UserLogin.Bridge.Log.Info().Msg("Waiting for PIN verification on mobile device...")
 		waitClient := line.NewClient("")
-		waitRes, err := waitClient.WaitForLogin(res.Verifier)
+		waitRes, err := waitClient.WaitForLogin(res.Verifier, res.NoE2EE)
 		if err != nil {
 			return fmt.Errorf("PIN verification failed: %w", err)
 		}

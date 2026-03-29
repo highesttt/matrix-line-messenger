@@ -57,9 +57,21 @@ func (c *Client) Login(email, pass, certificate string) (*LoginResult, error) {
 
 	// 4. LoginV2
 	// Identifier is KeyName when using RSA; certificate allows skipping PIN verification
+	noE2EE := false
 	respBytes, err := c.LoginV2(rsaKey.KeyName, encryptedPass, certificate, secretRes.Secret)
 	if err != nil && isLoginNotSupported(err) {
-		respBytes, err = c.LoginV2WithType(0, rsaKey.KeyName, encryptedPass, "", "")
+		// LSOFF: E2EE login not supported, retry without secret using fresh RSA key
+		log.Printf("[LINE] E2EE login not supported, retrying without secret (LSOFF)")
+		noE2EE = true
+		rsaKey2, err2 := c.GetRSAKeyInfo()
+		if err2 != nil {
+			return nil, fmt.Errorf("failed to get RSA key info for LSOFF retry: %w", err2)
+		}
+		encryptedPass2, err2 := password.EncryptPassword(email, pass, rsaKey2.SessionKey, rsaKey2.NValue, rsaKey2.EValue)
+		if err2 != nil {
+			return nil, fmt.Errorf("failed to encrypt password for LSOFF retry: %w", err2)
+		}
+		respBytes, err = c.LoginV2WithType(0, rsaKey2.KeyName, encryptedPass2, "", "")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("login failed: %w", err)
@@ -83,6 +95,8 @@ func (c *Client) Login(email, pass, certificate string) (*LoginResult, error) {
 		res.Pin = secretRes.Pin // Store locally for display
 	}
 
+	res.NoE2EE = noE2EE
+
 	if res.AuthToken != "" {
 		c.AccessToken = res.AuthToken
 	}
@@ -97,7 +111,79 @@ func isLoginNotSupported(err error) bool {
 	return strings.Contains(msg, "\"code\":89") || strings.Contains(msg, "not supported")
 }
 
-func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
+func (c *Client) WaitForLogin(verifier string, noE2EE bool) (*LoginResult, error) {
+	if noE2EE {
+		return c.waitForLoginJQ(verifier)
+	}
+	return c.waitForLoginLF1(verifier)
+}
+
+// waitForLoginJQ polls the JQ endpoint for LSOFF accounts (no E2EE).
+func (c *Client) waitForLoginJQ(verifier string) (*LoginResult, error) {
+	url := "https://line-chrome-gw.line-apps.com/api/talk/long-polling/JQ"
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("x-line-chrome-version", ExtensionVersion)
+	req.Header.Set("x-lal", "en_US")
+	req.Header["X-Line-Session-ID"] = []string{verifier}
+	req.Header["X-LST"] = []string{"180000"}
+
+	hmacRunner, err := gen.GetRunner()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get HMAC runner: %w", err)
+	}
+
+	path := strings.Split(url, "https://line-chrome-gw.line-apps.com")[1]
+	signature, err := hmacRunner.GetSignature(path, "", c.AccessToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate HMAC for polling: %w", err)
+	}
+	req.Header.Set("x-hmac", signature)
+
+	pollClient := &http.Client{Timeout: 200 * time.Second}
+	resp, err := pollClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	// JQ response: {"data":{"result":{"verifier":"...","authPhase":"QRCODE_VERIFIED",...}}}
+	var wrapper struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    struct {
+			Result struct {
+				Verifier  string `json:"verifier"`
+				AuthPhase string `json:"authPhase"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &wrapper); err != nil {
+		return nil, fmt.Errorf("failed to parse JQ polling response: %w", err)
+	}
+
+	if wrapper.Data.Result.AuthPhase != "QRCODE_VERIFIED" {
+		return nil, fmt.Errorf("JQ polling: unexpected authPhase %q", wrapper.Data.Result.AuthPhase)
+	}
+
+	log.Printf("[LINE] JQ poll verified, finalizing non-E2EE login")
+	res, err := c.LoginV2WithVerifier(verifier)
+	if err != nil {
+		return nil, fmt.Errorf("non-E2EE login finalization failed: %w", err)
+	}
+	res.NoE2EE = true
+	return res, nil
+}
+
+// waitForLoginLF1 polls the LF1 endpoint for LSON accounts (E2EE).
+func (c *Client) waitForLoginLF1(verifier string) (*LoginResult, error) {
 	url := "https://line-chrome-gw.line-apps.com/api/talk/long-polling/LF1"
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -109,23 +195,21 @@ func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 	req.Header.Set("x-line-chrome-version", ExtensionVersion)
 	req.Header.Set("x-lal", "en_US")
 	req.Header["X-Line-Session-ID"] = []string{verifier}
-	req.Header["X-LST"] = []string{"110000"} // Long Polling Timeout
+	req.Header["X-LST"] = []string{"110000"}
 
-	// Generate HMAC for Polling
 	hmacRunner, err := gen.GetRunner()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get HMAC runner: %w", err)
 	}
 
 	path := strings.Split(url, "https://line-chrome-gw.line-apps.com")[1]
-
 	signature, err := hmacRunner.GetSignature(path, "", c.AccessToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate HMAC for polling: %w", err)
 	}
 	req.Header.Set("x-hmac", signature)
 
-	pollClient := &http.Client{Timeout: 120 * time.Second} // Increased timeout
+	pollClient := &http.Client{Timeout: 120 * time.Second}
 	resp, err := pollClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -140,17 +224,16 @@ func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 		Data    LoginPollingResult `json:"data"`
 	}
 	if err := json.Unmarshal(body, &wrapper); err != nil {
-		return nil, fmt.Errorf("failed to parse polling response: %w", err)
+		return nil, fmt.Errorf("failed to parse LF1 polling response: %w", err)
 	}
 
 	meta := wrapper.Data.Result.Metadata
 
-	// Send confirmE2EELogin when the encrypted key chain is provided (post-LF1 step)
+	// LSON path: confirm E2EE handshake first, then finalize with verifier
 	if meta.EncryptedKeyChain != "" && meta.PublicKey != "" {
 		if err := c.ConfirmE2EELogin(verifier, meta.PublicKey, meta.EncryptedKeyChain); err != nil {
 			log.Printf("[LINE] ConfirmE2EELogin failed: %v", err)
 		} else {
-			// After confirm succeeds, finalize login using the verifier to get our access token
 			if res, err := c.LoginV2WithVerifier(verifier); err != nil {
 				log.Printf("[LINE] LoginV2WithVerifier failed: %v", err)
 			} else {
@@ -163,6 +246,7 @@ func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 		}
 	}
 
+	// Direct token in LF1 response (some login flows)
 	if meta.AuthToken != "" || meta.Certificate != "" {
 		return &LoginResult{
 			AuthToken:   meta.AuthToken,
@@ -170,7 +254,13 @@ func (c *Client) WaitForLogin(verifier string) (*LoginResult, error) {
 		}, nil
 	}
 
-	return nil, fmt.Errorf("polling returned without success")
+	// Fallback: try finalizing with verifier directly
+	log.Printf("[LINE] No E2EE key chain in LF1 response, attempting direct login")
+	if res, err := c.LoginV2WithVerifier(verifier); err != nil {
+		return nil, fmt.Errorf("login finalization failed: %w", err)
+	} else {
+		return res, nil
+	}
 }
 
 func (c *Client) GetRSAKeyInfo() (*RSAKeyInfo, error) {
