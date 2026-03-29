@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.22
-
 ARG DOCKER_HUB="docker.io"
 
 FROM ${DOCKER_HUB}/alpine:3.23 AS builder
@@ -7,19 +5,12 @@ FROM ${DOCKER_HUB}/alpine:3.23 AS builder
 RUN apk add --no-cache go git build-base olm-dev
 
 WORKDIR /build
-ENV GOPATH=/go \
-    GOMODCACHE=/go/pkg/mod \
-    GOCACHE=/root/.cache/go-build
 
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+RUN go mod download
 
-COPY cmd ./cmd
-COPY pkg ./pkg
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    go build -o matrix-line ./cmd/matrix-line
+COPY . .
+RUN go build -o matrix-line ./cmd/matrix-line
 
 FROM ${DOCKER_HUB}/alpine:3.23
 

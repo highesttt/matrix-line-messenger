@@ -7,13 +7,3 @@ data/
 .git/**
 .idea
 .vscode
-.github
-.github/**
-
-# Files not needed to compile or run the image
-README.md
-LICENSE
-.pre-commit-config.yaml
-build.sh
-build-windows.sh
-docker-compose.yml
