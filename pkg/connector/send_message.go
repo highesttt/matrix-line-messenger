@@ -66,6 +66,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 	var originalMediaData []byte
 	var originalThumbData []byte
 
+
 	switch msg.Content.MsgType {
 	case event.MsgText:
 		contentType = int(ContentText)
@@ -123,7 +124,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(data))
 			contentMetadata["contentType"] = fmt.Sprintf("%d", ContentImage)
 
-			fileName := msg.Content.Body
+			fileName := msg.Content.GetFileName()
 			if fileName == "" {
 				fileName = "image." + extension
 			}
@@ -193,7 +194,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			contentMetadata["contentType"] = fmt.Sprintf("%d", ContentImage)
 			contentMetadata["ENC_KM"] = keyMaterialB64
 
-			fileName := msg.Content.Body
+			fileName := msg.Content.GetFileName()
 			if fileName == "" {
 				fileName = "image." + extension
 			}
@@ -223,7 +224,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 
 		contentType = int(ContentFile)
 
-		fileName := msg.Content.Body
+		fileName := msg.Content.GetFileName()
 		if fileName == "" {
 			fileName = "file.bin"
 		}

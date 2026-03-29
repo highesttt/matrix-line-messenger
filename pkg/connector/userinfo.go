@@ -48,6 +48,7 @@ func (lc *LineClient) GetCapabilities(ctx context.Context, portal *bridgev2.Port
 		DeleteChatForEveryone: true,
 		File: event.FileFeatureMap{
 			event.MsgImage: {
+				Caption: event.CapLevelRejected,
 				MimeTypes: map[string]event.CapabilitySupportLevel{
 					"image/jpeg": event.CapLevelFullySupported,
 					"image/png":  event.CapLevelFullySupported,
@@ -56,18 +57,21 @@ func (lc *LineClient) GetCapabilities(ctx context.Context, portal *bridgev2.Port
 				},
 			},
 			event.MsgFile: {
+				Caption: event.CapLevelRejected,
 				MimeTypes: map[string]event.CapabilitySupportLevel{
 					"image/gif": event.CapLevelFullySupported,
 					"*/*":       event.CapLevelFullySupported,
 				},
 			},
 			event.MsgVideo: {
+				Caption: event.CapLevelRejected,
 				MimeTypes: map[string]event.CapabilitySupportLevel{
 					"video/mp4":  event.CapLevelFullySupported,
 					"video/webm": event.CapLevelFullySupported,
 				},
 			},
 			event.MsgAudio: {
+				Caption: event.CapLevelRejected,
 				MimeTypes: map[string]event.CapabilitySupportLevel{
 					"audio/mpeg": event.CapLevelFullySupported,
 					"audio/ogg":  event.CapLevelFullySupported,
