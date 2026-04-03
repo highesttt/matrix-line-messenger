@@ -188,13 +188,24 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					}
 
 					if err != nil {
-						lc.UserLogin.Bridge.Log.Error().
+						lc.UserLogin.Bridge.Log.Warn().
 							Err(err).
 							Str("oid", oid).
 							Str("msg_id", data.ID).
 							Bool("plain_media", isPlainMedia).
-							Msg("Failed to download image from OBS")
-						return nil, fmt.Errorf("failed to download image from OBS: %w", err)
+							Msg("Failed to download image from OBS, sending placeholder")
+						return &bridgev2.ConvertedMessage{
+							Parts: []*bridgev2.ConvertedMessagePart{
+								{
+									Type: event.EventMessage,
+									Content: &event.MessageEventContent{
+										MsgType:   event.MsgNotice,
+										Body:      "[Image unavailable — LINE media expired before it could be bridged]",
+										RelatesTo: replyRelatesTo,
+									},
+								},
+							},
+						}, nil
 					}
 
 					// Decrypt image if it has keyMaterial (E2EE)
@@ -280,13 +291,24 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					}
 
 					if err != nil {
-						lc.UserLogin.Bridge.Log.Error().
+						lc.UserLogin.Bridge.Log.Warn().
 							Err(err).
 							Str("oid", oid).
 							Str("msg_id", data.ID).
 							Bool("plain_media", isPlainMedia).
-							Msg("Failed to download video from OBS")
-						return nil, fmt.Errorf("failed to download video from OBS: %w", err)
+							Msg("Failed to download video from OBS, sending placeholder")
+						return &bridgev2.ConvertedMessage{
+							Parts: []*bridgev2.ConvertedMessagePart{
+								{
+									Type: event.EventMessage,
+									Content: &event.MessageEventContent{
+										MsgType:   event.MsgNotice,
+										Body:      "[Video unavailable — LINE media expired before it could be bridged]",
+										RelatesTo: replyRelatesTo,
+									},
+								},
+							},
+						}, nil
 					}
 
 					if decryptedBody != "" && strings.Contains(decryptedBody, "keyMaterial") {
@@ -421,12 +443,23 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					}
 					fileData, err := client.DownloadOBSWithSID(oid, data.ID, sid)
 					if err != nil {
-						lc.UserLogin.Bridge.Log.Error().
+						lc.UserLogin.Bridge.Log.Warn().
 							Err(err).
 							Str("oid", oid).
 							Bool("plain_media", isPlainMedia).
-							Msg("Failed to download file from OBS")
-						return nil, fmt.Errorf("failed to download file from OBS: %w", err)
+							Msg("Failed to download file from OBS, sending placeholder")
+						return &bridgev2.ConvertedMessage{
+							Parts: []*bridgev2.ConvertedMessagePart{
+								{
+									Type: event.EventMessage,
+									Content: &event.MessageEventContent{
+										MsgType:   event.MsgNotice,
+										Body:      "[File unavailable — LINE media expired before it could be bridged]",
+										RelatesTo: replyRelatesTo,
+									},
+								},
+							},
+						}, nil
 					}
 
 					// Try to decrypt using keyMaterial from encrypted payload

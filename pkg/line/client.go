@@ -664,7 +664,7 @@ func (c *Client) DownloadOBSWithSID(oid string, messageID string, sid string) ([
 			return nil, fmt.Errorf("OBS download request failed: %w", err)
 		}
 
-		if resp.StatusCode == 202 && attempt < maxRetries {
+		if (resp.StatusCode == 202 || resp.StatusCode == 404) && attempt < maxRetries {
 			resp.Body.Close()
 			time.Sleep(2 * time.Second)
 			// Rebuild request for retry
