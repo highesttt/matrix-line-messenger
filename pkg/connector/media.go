@@ -194,6 +194,41 @@ func generateThumbnail(imageData []byte) ([]byte, int, int, error) {
 	return buf.Bytes(), newWidth, newHeight, nil
 }
 
+// encryptThumbnail encrypts thumbnail data using the same key material as the parent media.
+// Returns the encrypted thumbnail with HMAC appended, matching LINE's E2EE thumbnail format.
+func encryptThumbnail(thumbnailData []byte, keyMaterialB64 string) ([]byte, error) {
+	keyMaterial, err := base64.StdEncoding.DecodeString(keyMaterialB64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode key material: %w", err)
+	}
+
+	kdf := hkdf.New(sha256.New, keyMaterial, nil, []byte("FileEncryption"))
+	derived := make([]byte, 76)
+	if _, err := io.ReadFull(kdf, derived); err != nil {
+		return nil, fmt.Errorf("failed to derive keys: %w", err)
+	}
+
+	encKey := derived[0:32]
+	macKey := derived[32:64]
+	nonce := derived[64:76]
+
+	counter := make([]byte, 16)
+	copy(counter, nonce)
+
+	block, err := aes.NewCipher(encKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+	stream := cipher.NewCTR(block, counter)
+
+	encrypted := make([]byte, len(thumbnailData))
+	stream.XORKeyStream(encrypted, thumbnailData)
+
+	h := hmac.New(sha256.New, macKey)
+	h.Write(encrypted)
+	return append(encrypted, h.Sum(nil)...), nil
+}
+
 func isAnimatedGif(data []byte) bool {
 	// GIF header: "GIF89a" or "GIF87a"
 	if len(data) < 6 {

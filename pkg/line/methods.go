@@ -119,17 +119,21 @@ func (c *Client) GetE2EEGroupSharedKey(chatMid string, groupKeyID int) (*E2EEGro
 		return nil, err
 	}
 	var wrapper struct {
-		Code    int                `json:"code"`
-		Message string             `json:"message"`
-		Data    E2EEGroupSharedKey `json:"data"`
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(resp, &wrapper); err != nil {
 		return nil, err
 	}
 	if wrapper.Code != 0 {
-		return nil, fmt.Errorf("getE2EEGroupSharedKey failed: %s", wrapper.Message)
+		return nil, parseE2EEGroupKeyError("getE2EEGroupSharedKey", wrapper.Message, wrapper.Data)
 	}
-	return &wrapper.Data, nil
+	var data E2EEGroupSharedKey
+	if err := json.Unmarshal(wrapper.Data, &data); err != nil {
+		return nil, err
+	}
+	return &data, nil
 }
 
 func (c *Client) GetLastE2EEGroupSharedKey(chatMid string) (*E2EEGroupSharedKey, error) {
@@ -138,17 +142,21 @@ func (c *Client) GetLastE2EEGroupSharedKey(chatMid string) (*E2EEGroupSharedKey,
 		return nil, err
 	}
 	var wrapper struct {
-		Code    int                `json:"code"`
-		Message string             `json:"message"`
-		Data    E2EEGroupSharedKey `json:"data"`
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(resp, &wrapper); err != nil {
 		return nil, err
 	}
 	if wrapper.Code != 0 {
-		return nil, fmt.Errorf("getLastE2EEGroupSharedKey failed: %s", wrapper.Message)
+		return nil, parseE2EEGroupKeyError("getLastE2EEGroupSharedKey", wrapper.Message, wrapper.Data)
 	}
-	return &wrapper.Data, nil
+	var data E2EEGroupSharedKey
+	if err := json.Unmarshal(wrapper.Data, &data); err != nil {
+		return nil, err
+	}
+	return &data, nil
 }
 
 // NegotiateE2EEPublicKey fetches (or renews) the public key of the person you're talking to (E2EE).
@@ -279,7 +287,7 @@ func parseE2EEPublicKey(rawData []byte) (*E2EEPublicKey, error) {
 		keyID = findInt64(data)
 	}
 	if pub == "" || keyID == 0 {
-		return nil, fmt.Errorf("missing fields (pub=%t keyID=%d raw=%s)", pub != "", keyID, string(rawData))
+		return nil, fmt.Errorf("%w: missing fields (pub=%t keyID=%d raw=%s)", ErrNoUsableE2EEPublicKey, pub != "", keyID, string(rawData))
 	}
 
 	return &E2EEPublicKey{
@@ -354,6 +362,26 @@ func (c *Client) GetContactsV2(mids []string) (*ContactsResponse, error) {
 	}
 	if wrapper.Code != 0 {
 		return nil, fmt.Errorf("getContactsV2 failed: %s", wrapper.Message)
+	}
+	return &wrapper.Data, nil
+}
+
+// GetBuddyProfile fetches the profile of a LINE official/business account (buddy).
+func (c *Client) GetBuddyProfile(mid string) (*BuddyProfile, error) {
+	resp, err := c.callRPC("BuddyService", "getBuddyProfile", mid)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int          `json:"code"`
+		Message string       `json:"message"`
+		Data    BuddyProfile `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("getBuddyProfile failed: %s", wrapper.Message)
 	}
 	return &wrapper.Data, nil
 }

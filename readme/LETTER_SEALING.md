@@ -4,11 +4,10 @@ This note summarizes what issue [#42](https://github.com/highesttt/matrix-line-m
 
 ## TL;DR
 
-- The bridge currently assumes the logged-in LINE account has Letter Sealing enabled.
-- Logging in with a LINE account that has Letter Sealing disabled is currently unsupported.
-- If the bridge account has Letter Sealing enabled, incoming messages from users who have it disabled appear to work.
-- Sending from the bridge to a user with Letter Sealing disabled, or to a group that includes such a user, does not currently work.
-- Based on the current logs and code paths, full support probably needs an alternate non-E2EE send path, not just better retries.
+- The bridge supports both `LSON` and `LSOFF` accounts for login and messaging.
+- Text messages work in all combinations: `LSON`/`LSOFF` direct messages, mixed groups, and business/bot accounts.
+- Image, video, and file sending works for all user types. E2EE media uses encrypted OBS upload; plain media uses the `r/talk/m` post-send upload path.
+- Transparent PNGs are composited onto a white background before upload, matching LINE native client behavior.
 
 ## Terms
 
@@ -19,132 +18,128 @@ This note summarizes what issue [#42](https://github.com/highesttt/matrix-line-m
 
 | Scenario | Current status | Notes |
 | --- | --- | --- |
-| Bridge account is `LSOFF` and tries to log in | `FAIL` | PIN step is reached, but the login never completes successfully. |
+| Bridge account is `LSOFF` and tries to log in | `WORKS` | Uses non-E2EE login flow: fresh RSA key, type 0 retry, JQ polling. |
+| Bridge account is `LSON` and tries to log in | `WORKS` | Uses E2EE login flow: LF1 polling, ConfirmE2EELogin, key chain export. |
 | Bridge account is `LSON`, receives direct message from `LSOFF` | `WORKS` | Confirmed in issue testing. |
 | Bridge account is `LSON`, receives group message in a chat that includes `LSOFF` | `WORKS` | Confirmed in issue testing. |
-| Bridge account is `LSON`, sends direct message to `LSOFF` | `FAIL` | Direct send cannot obtain a usable peer E2EE key. |
-| Bridge account is `LSON`, sends group message to a room that includes `LSOFF` | `FAIL` | Group send cannot obtain a group shared key. |
-| Bridge account is `LSON`, sends to `LSON` only chats | `WORKS` | Works after normal login/re-login. |
+| Bridge account is `LSON`, sends direct message to `LSOFF` | `WORKS` | Detects missing peer E2EE key and falls back to plain text send. |
+| Bridge account is `LSON`, sends group message to a room that includes `LSOFF` | `WORKS` | Detects missing group shared key and falls back to plain text send. |
+| Bridge account is `LSON`, sends to `LSON` only chats | `WORKS` | Uses full E2EE encryption path. |
+| Bridge account is `LSOFF`, sends direct message to `LSON` | `WORKS` | Sends as plain text (E2EE not initialized). |
+| Bridge account is `LSOFF`, sends to mixed groups | `WORKS` | Sends as plain text. |
+| Bridge account is `LSOFF`, sends to bot/business account | `WORKS` | Sends as plain text. |
+| Bridge account sends images/media to `LSON` | `WORKS` | E2EE encrypted media with keyMaterial in payload. |
+| Bridge account sends images/media to `LSOFF` or plain chats | `WORKS` | Plain media uploaded via `r/talk/m/{msgId}` after sending. |
 
-## What the current code is assuming
+## How it works
 
 ### Login path
 
-The login flow is built around LINE's E2EE login handshake:
+The bridge supports two login flows, selected automatically based on whether the LINE account has Letter Sealing enabled:
 
-- `pkg/line/client.go` waits for LF1 login polling data.
-- If LF1 returns `EncryptedKeyChain` and `PublicKey`, the bridge calls `confirmE2EELogin` and then finalizes the login with `loginV2WithVerifier`.
-- `pkg/connector/connector.go` then exports and stores the user's E2EE keys when that key chain is present.
+**LSON accounts (E2EE login):**
+1. `loginV2` with `type: 2` and E2EE `secret` returns a verifier and PIN.
+2. Background goroutine polls `LF1` endpoint until the user confirms on their phone.
+3. LF1 returns `EncryptedKeyChain` and `PublicKey`.
+4. `confirmE2EELogin` completes the E2EE handshake.
+5. `loginV2WithVerifier` finalizes and returns access tokens + E2EE key material.
 
-Issue `#42` shows that accounts with Letter Sealing disabled can still receive the PIN prompt, but the bridge never reaches a successful final login. In practice, that means the bridge does not currently have a working non-Letter-Sealing login path.
+**LSOFF accounts (non-E2EE login):**
+1. `loginV2` with `type: 2` and E2EE `secret` fails with code 89 "not supported".
+2. Bridge fetches a fresh RSA key (LINE invalidates the previous one after the failed attempt).
+3. Retry `loginV2` with `type: 0`, no secret, and the new RSA key returns a verifier and PIN.
+4. Background goroutine polls `JQ` endpoint (not LF1) until the user confirms on their phone.
+5. JQ returns `authPhase: "QRCODE_VERIFIED"`.
+6. `loginV2WithVerifier` finalizes and returns access tokens (no E2EE data).
 
-### Direct message send path
+### Send path
 
-Direct sends always go through E2EE:
+The bridge determines E2EE capability per-chat before sending:
 
-- `pkg/connector/send_message.go` calls `ensurePeerKey(...)`.
-- `pkg/connector/e2ee_keys.go` implements that by calling `negotiateE2EEPublicKey`.
-- The result is passed into `EncryptMessageV2Raw(...)`.
+- If `lc.E2EE == nil` (LSOFF bridge account): all messages sent as plain text.
+- For 1:1 chats: `ensurePeerKey` probes the peer's E2EE public key. If the peer is `LSOFF`, falls back to plain text.
+- For groups: `fetchAndUnwrapGroupKey` attempts to get the group shared key. If not available (mixed group), falls back to plain text.
+- E2EE capability is cached per-peer and per-group with a 1-hour TTL.
 
-In issue `#54`, the failing direct-chat case produced a parsed error like:
-
-`missing fields (pub=false keyID=-1 raw={"allowedTypes":[],"specVersion":-1})`
-
-That strongly suggests LINE is not returning a usable E2EE public key for `LSOFF` peers. This looks more like "there is no key to use here" than "the bridge forgot to retry".
-
-### Group send path
-
-Group sends also assume Letter Sealing is available for the chat:
-
-- `pkg/connector/send_message.go` calls `fetchAndUnwrapGroupKey(...)` before encrypting.
-- `pkg/connector/e2ee_keys.go` fetches either `getLastE2EEGroupSharedKey` or `getE2EEGroupSharedKey`.
-- `pkg/e2ee/manager.go` then encrypts with `EncryptGroupMessageRaw(...)`.
-
-In issue `#54`, the failing mixed-group case logged:
-
-`TalkException code 5 reason "not found"`
-
-followed by:
-
-`encrypt failed: no group key found`
-
-That means the bridge has no group key material to encrypt with when the chat is not fully Letter Sealed.
+**Plain text media** uses a different upload flow than E2EE media:
+- E2EE: encrypt data, upload to `r/talk/emi/{id}` (OBS), send message with OID in metadata.
+- Plain: send message first, then upload raw data to `r/talk/m/{serverMessageId}`.
 
 ### Receive path
 
-Receiving is in better shape than sending:
+- `pkg/connector/handle_message.go` lazily fetches peer keys or group keys based on key IDs in incoming message chunks.
+- Incoming messages from `LSOFF` users arrive as plain text and are handled without decryption.
 
-- `pkg/connector/handle_message.go` can lazily fetch peer keys or group keys based on the key IDs found in incoming message chunks.
-- The bridge can sometimes decrypt incoming messages even when it cannot originate new ones for the same chat.
+## Test matrix
 
-This matches the current field reports from the issues: inbound direct and group messages involving `LSOFF` users are readable, but outbound messages fail.
+### Login
 
-## Working conclusion
+| Test case | Status |
+| --- | --- |
+| `LSOFF` bridge account login | Verified |
+| `LSON` bridge account login | Verified |
 
-The bridge currently supports Letter Sealing well enough to:
+### Text messages
 
-- log in with `LSON` accounts,
-- decrypt normal `LSON` traffic, and
-- receive some traffic from chats that include `LSOFF` users.
+| Test case | Path | Status |
+| --- | --- | --- |
+| `LSON` bridge -> `LSON` peer (DM) | E2EE | Verified |
+| `LSON` bridge -> `LSOFF` peer (DM) | Plain | Verified |
+| `LSON` bridge -> `LSON`-only group | E2EE | Verified |
+| `LSON` bridge -> mixed group | Plain | Verified |
+| `LSON` bridge -> bot/business account | Plain | Verified |
+| `LSOFF` bridge -> `LSON` peer (DM) | Plain | Verified |
+| `LSOFF` bridge -> `LSOFF` peer (DM) | Plain | Not tested |
+| `LSOFF` bridge -> mixed group (LSOFF created) | Plain | Verified |
+| `LSOFF` bridge -> mixed group (LSON created) | Plain | Verified |
+| `LSOFF` bridge -> bot/business account | Plain | Verified |
 
-It does not currently support using the bridge as a full sender in `LSOFF` scenarios.
+### Receiving messages
 
-The most likely explanation, based on the current code and logs, is:
+| Test case | Status |
+| --- | --- |
+| Incoming E2EE text from `LSON` peer | Verified |
+| Incoming plain text from `LSOFF` peer | Verified |
+| Incoming E2EE group message (`LSON`-only) | Verified |
+| Incoming group message (mixed group) | Verified |
 
-- `LSOFF` accounts do not complete the same E2EE login handshake the bridge expects,
-- direct chats with `LSOFF` users do not expose a usable E2EE public key through the current RPCs, and
-- mixed groups do not expose a usable E2EE group shared key through the current RPCs.
+### Media (images)
 
-That is an inference from the current issue reports and logs, but it fits the observed behavior cleanly.
+| Test case | Path | Status |
+| --- | --- | --- |
+| Image to `LSON` peer | E2EE (`emi` upload) | Verified |
+| Image to `LSOFF` peer | Plain (`m` upload) | Verified |
+| Image to mixed group | Plain (`m` upload) | Verified |
+| Image to bot/business account | Plain (`m` upload) | Verified |
+| Transparent PNG | White background compositing | Verified |
 
-## Recommended product stance right now
+### Media (audio, video, files)
 
-Until a verified alternate send/login path exists, the safest thing to document and enforce is:
+| Test case | Path | Status |
+| --- | --- | --- |
+| Video to `LSON` peer | E2EE (`emv` upload) | Verified |
+| Video to `LSOFF` / plain chats | Plain (`m` upload) | Verified |
+| File to `LSON` peer | E2EE (`emf` upload) | Verified |
+| File to `LSOFF` / plain chats | Plain (`m` upload) | Verified |
+| Audio send (any) | Not implemented | Known gap |
 
-1. The LINE account used to log into the bridge must have Letter Sealing enabled.
-2. Chats involving `LSOFF` users should be treated as partially supported at best.
-3. The bridge should fail fast with a clear, specific error instead of surfacing generic internal errors or repeatedly trying to recover the token.
+### Media receive (incoming to Beeper)
 
-## Checklist for proper support
+| Test case | Path | Status |
+| --- | --- | --- |
+| Incoming image from plain chat | Plain (`m` download) | Verified |
+| Incoming image from E2EE chat | E2EE (`emi` download) | Verified |
+| Incoming video from plain chat | Plain (`m` download) | Not tested |
+| Incoming video from E2EE chat | E2EE (`emv` download) | Not tested |
+| Incoming file from plain chat | Plain (`m` download) | Not tested |
+| Incoming file from E2EE chat | E2EE (`emf` download) | Not tested |
 
-### Immediate UX and guardrails
+### Re-login and token refresh
 
-- [ ] Replace the generic login failure with a message that explicitly says Letter Sealing must be enabled on the LINE account used by the bridge.
-- [ ] Document the setting path in user-facing docs: `LINE app -> Settings -> Privacy -> Letter Sealing`.
-- [ ] Detect the known `LSOFF` login failure mode and stop the flow cleanly instead of leaving the bridge `UNCONFIGURED` with an internal error.
-- [ ] Detect the known direct-send failure mode where `negotiateE2EEPublicKey` returns no usable key and return a specific unsupported-chat error.
-- [ ] Detect the known group-send failure mode where `getLastE2EEGroupSharedKey` returns `not found` and return a specific unsupported-chat error.
-- [ ] Avoid automatic token refresh/re-login loops when the real problem is missing Letter Sealing material rather than expired credentials.
-
-### Protocol investigation
-
-- [ ] Capture raw LF1/login responses for a bridge account with Letter Sealing disabled.
-- [ ] Capture raw `negotiateE2EEPublicKey` and `getE2EEPublicKey` responses for a direct chat with an `LSOFF` user.
-- [ ] Capture raw `getLastE2EEGroupSharedKey` / `getE2EEGroupSharedKey` responses for a mixed `LSON` + `LSOFF` group.
-- [ ] Compare the bridge RPCs with traffic from the official LINE clients for the same chats.
-- [ ] Determine whether official clients fall back to plaintext, legacy crypto, or a different RPC entirely when a chat is not fully Letter Sealed.
-- [ ] Confirm whether there is a reliable API surface for detecting chat-level or peer-level Letter Sealing capability before send time.
-
-### Implementation work
-
-- [ ] Add a dedicated non-E2EE or alternate send path for direct chats when the peer has no usable E2EE key.
-- [ ] Add a dedicated non-group-key or alternate send path for groups that are not fully Letter Sealed.
-- [ ] Route outgoing sends based on chat capability instead of assuming E2EE for every direct and group chat.
-- [ ] Persist any capability detection needed so the bridge does not rediscover the same unsupported state on every send.
-- [ ] Keep the current E2EE path as the fast path for `LSON` to `LSON` traffic.
-
-### Test matrix
-
-- [ ] `LSOFF` bridge account login.
-- [ ] `LSON` bridge account login.
-- [ ] `LSON` -> `LSOFF` direct send from Beeper.
-- [ ] `LSOFF` -> `LSON` direct receive into Beeper.
-- [ ] `LSON` -> mixed group send from Beeper.
-- [ ] Mixed group receive into Beeper.
-- [ ] `LSON` -> `LSON` direct and group regression tests.
-- [ ] Chat created before enabling Letter Sealing, then re-tested after enabling it for all members.
-- [ ] Chats created by iOS and Android clients.
-- [ ] Business chats, if the API surface differs there.
+| Test case | Status |
+| --- | --- |
+| `LSON` re-login after token expiry | Not tested |
+| `LSOFF` re-login after token expiry | Not tested |
 
 ## References
 
