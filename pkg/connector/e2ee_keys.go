@@ -73,7 +73,7 @@ func (lc *LineClient) fetchAndUnwrapGroupKey(ctx context.Context, chatMid string
 	return nil
 }
 
-func (lc *LineClient) ensurePeerKey(_ context.Context, mid string) (int, string, error) {
+func (lc *LineClient) ensurePeerKey(ctx context.Context, mid string) (int, string, error) {
 	if lc.peerKeys == nil {
 		lc.peerKeys = make(map[string]peerKeyInfo)
 	}
@@ -93,6 +93,12 @@ func (lc *LineClient) ensurePeerKey(_ context.Context, mid string) (int, string,
 	}
 	client := line.NewClient(lc.AccessToken)
 	res, err := client.NegotiateE2EEPublicKey(mid)
+	if err != nil && !line.IsNoUsableE2EEPublicKey(err) && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
+			client = line.NewClient(lc.AccessToken)
+			res, err = client.NegotiateE2EEPublicKey(mid)
+		}
+	}
 	if err != nil {
 		// Cache negative result so we don't keep hitting the API
 		if line.IsNoUsableE2EEPublicKey(err) {

@@ -508,6 +508,12 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 	lc.reqSeqMu.Unlock()
 
 	sentMsg, err := client.SendMessage(int64(reqSeq), lineMsg)
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
+			client = line.NewClient(lc.AccessToken)
+			sentMsg, err = client.SendMessage(int64(reqSeq), lineMsg)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -559,7 +565,14 @@ func (lc *LineClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridge
 	lc.sentReqSeqs[reqSeq] = time.Now()
 	lc.reqSeqMu.Unlock()
 
-	return client.UnsendMessage(int64(reqSeq), string(msg.TargetMessage.ID))
+	err := client.UnsendMessage(int64(reqSeq), string(msg.TargetMessage.ID))
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
+			client = line.NewClient(lc.AccessToken)
+			err = client.UnsendMessage(int64(reqSeq), string(msg.TargetMessage.ID))
+		}
+	}
+	return err
 }
 
 func (lc *LineClient) HandleMatrixLeaveRoom(ctx context.Context, portal *bridgev2.Portal) error {
@@ -573,5 +586,12 @@ func (lc *LineClient) HandleMatrixLeaveRoom(ctx context.Context, portal *bridgev
 	lc.sentReqSeqs[reqSeq] = time.Now()
 	lc.reqSeqMu.Unlock()
 
-	return client.SendChatRemoved(int64(reqSeq), string(portal.ID), "0", 0)
+	err := client.SendChatRemoved(int64(reqSeq), string(portal.ID), "0", 0)
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
+			client = line.NewClient(lc.AccessToken)
+			err = client.SendChatRemoved(int64(reqSeq), string(portal.ID), "0", 0)
+		}
+	}
+	return err
 }
