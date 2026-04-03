@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,9 @@ type LineClient struct {
 
 	noE2EEGroups map[string]time.Time // chatMid -> when group E2EE failure was cached
 	contactCache map[string]line.Contact
+
+	refreshTimer              *time.Timer
+	durationUntilRefreshSec   int64 // seconds until token needs refresh (from LINE API)
 }
 
 type peerKeyInfo struct {
@@ -58,6 +62,12 @@ func (lc *LineClient) refreshAndSave(ctx context.Context) error {
 		lc.RefreshToken = res.RefreshToken
 	}
 
+	if res.DurationUntilRefreshSec != "" {
+		if dur, err := strconv.ParseInt(res.DurationUntilRefreshSec, 10, 64); err == nil && dur > 0 {
+			lc.durationUntilRefreshSec = dur
+		}
+	}
+
 	meta := lc.UserLogin.Metadata.(*UserLoginMetadata)
 	meta.AccessToken = lc.AccessToken
 	meta.RefreshToken = lc.RefreshToken
@@ -82,14 +92,25 @@ func (lc *LineClient) isLoggedOut(err error) bool {
 }
 
 // recoverToken attempts to restore a valid session by refreshing, then re-logging in.
-// Returns nil on success. On failure the caller should send StateBadCredentials.
+// On failure it sends StateBadCredentials so the account shows as disconnected.
 func (lc *LineClient) recoverToken(ctx context.Context) error {
 	if err := lc.refreshAndSave(ctx); err == nil {
 		lc.UserLogin.Bridge.Log.Info().Msg("Token recovered via refresh")
+		lc.scheduleTokenRefresh()
 		return nil
 	}
 	lc.UserLogin.Bridge.Log.Info().Msg("Refresh failed, attempting re-login with stored credentials...")
-	return lc.tryLogin(ctx)
+	if err := lc.tryLogin(ctx); err != nil {
+		lc.UserLogin.Bridge.Log.Error().Err(err).Msg("Token recovery failed — marking account as disconnected")
+		lc.UserLogin.BridgeState.Send(status.BridgeState{
+			StateEvent: status.StateBadCredentials,
+			Error:      "line-token-expired",
+			Message:    "Session expired and could not be restored. Please re-login.",
+		})
+		return err
+	}
+	lc.scheduleTokenRefresh()
+	return nil
 }
 
 func (lc *LineClient) Connect(ctx context.Context) {
@@ -136,6 +157,9 @@ func (lc *LineClient) Connect(ctx context.Context) {
 		StateEvent: status.StateConnected,
 	})
 
+	// Schedule proactive token refresh if we have timing info
+	lc.scheduleTokenRefresh()
+
 	// Initialize E2EE manager and load keys
 	mgr, err := e2ee.NewManager()
 	if err != nil {
@@ -167,7 +191,6 @@ func (lc *LineClient) Connect(ctx context.Context) {
 	}
 
 	go lc.syncChats(ctx)
-	go lc.syncDMChats(ctx)
 	go lc.prefetchMessages(ctx)
 	go lc.pollLoop(ctx)
 }
@@ -232,6 +255,11 @@ func (lc *LineClient) tryLogin(ctx context.Context) error {
 		if res.TokenV3IssueResult.RefreshToken != "" {
 			lc.RefreshToken = res.TokenV3IssueResult.RefreshToken
 		}
+		if res.TokenV3IssueResult.DurationUntilRefreshSec != "" {
+			if dur, err := strconv.ParseInt(res.TokenV3IssueResult.DurationUntilRefreshSec, 10, 64); err == nil && dur > 0 {
+				lc.durationUntilRefreshSec = dur
+			}
+		}
 	}
 	if res.Mid != "" {
 		lc.Mid = res.Mid
@@ -285,7 +313,46 @@ func (lc *LineClient) ensureValidToken(ctx context.Context) error {
 	return lc.tryLogin(ctx)
 }
 
-func (lc *LineClient) Disconnect() {}
+// scheduleTokenRefresh sets a timer to proactively refresh the access token
+// before it expires, using the DurationUntilRefreshSec value from the LINE API.
+func (lc *LineClient) scheduleTokenRefresh() {
+	if lc.refreshTimer != nil {
+		lc.refreshTimer.Stop()
+	}
+
+	dur := lc.durationUntilRefreshSec
+	if dur <= 0 {
+		return
+	}
+
+	// Refresh 5 minutes early to avoid cutting it close
+	margin := int64(300)
+	if dur > margin {
+		dur -= margin
+	}
+
+	lc.UserLogin.Bridge.Log.Info().
+		Int64("refresh_in_sec", dur).
+		Int64("original_duration_sec", lc.durationUntilRefreshSec).
+		Msg("Scheduled proactive token refresh")
+
+	lc.refreshTimer = time.AfterFunc(time.Duration(dur)*time.Second, func() {
+		ctx := context.Background()
+		if err := lc.refreshAndSave(ctx); err != nil {
+			lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Proactive token refresh failed, will retry via recoverToken on next API call")
+			return
+		}
+		lc.UserLogin.Bridge.Log.Info().Msg("Proactive token refresh succeeded")
+		lc.scheduleTokenRefresh()
+	})
+}
+
+func (lc *LineClient) Disconnect() {
+	if lc.refreshTimer != nil {
+		lc.refreshTimer.Stop()
+		lc.refreshTimer = nil
+	}
+}
 
 func (lc *LineClient) IsLoggedIn() bool { return lc.AccessToken != "" }
 
