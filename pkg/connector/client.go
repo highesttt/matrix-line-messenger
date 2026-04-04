@@ -32,6 +32,9 @@ type LineClient struct {
 	noE2EEGroups map[string]time.Time // chatMid -> when group E2EE failure was cached
 	contactCache map[string]cachedContact
 
+	recoverMu   sync.Mutex // serializes token recovery so only one goroutine recovers at a time
+	recoverTime time.Time  // when the last successful recovery happened
+
 	refreshTimer            *time.Timer
 	durationUntilRefreshSec int64 // seconds until token needs refresh (from LINE API)
 }
@@ -73,6 +76,12 @@ func (lc *LineClient) refreshAndSave(ctx context.Context) error {
 		if dur, err := strconv.ParseInt(res.DurationUntilRefreshSec, 10, 64); err == nil && dur > 0 {
 			lc.durationUntilRefreshSec = dur
 		}
+	}
+
+	// Validate the new token actually works before declaring success
+	validationClient := line.NewClient(lc.AccessToken)
+	if _, err := validationClient.GetProfile(); err != nil {
+		return fmt.Errorf("refreshed token failed validation (GetProfile): %w", err)
 	}
 
 	meta := lc.UserLogin.Metadata.(*UserLoginMetadata)
@@ -128,10 +137,23 @@ func (lc *LineClient) callWithRecovery(ctx context.Context, fn func(*line.Client
 }
 
 // recoverToken attempts to restore a valid session by refreshing, then re-logging in.
+// It is serialized by recoverMu so only one goroutine performs recovery at a time.
+// Goroutines that arrive while recovery is in progress wait for the result; if another
+// goroutine already recovered recently (within 10s), the call is a no-op.
 // On failure it sends StateBadCredentials so the account shows as disconnected.
 func (lc *LineClient) recoverToken(ctx context.Context) error {
+	lc.recoverMu.Lock()
+	defer lc.recoverMu.Unlock()
+
+	// If another goroutine just recovered, skip — the token is already fresh.
+	if !lc.recoverTime.IsZero() && time.Since(lc.recoverTime) < 10*time.Second {
+		lc.UserLogin.Bridge.Log.Debug().Msg("Skipping token recovery — another goroutine recovered recently")
+		return nil
+	}
+
 	if err := lc.refreshAndSave(ctx); err == nil {
 		lc.UserLogin.Bridge.Log.Info().Msg("Token recovered via refresh")
+		lc.recoverTime = time.Now()
 		lc.scheduleTokenRefresh()
 		return nil
 	}
@@ -145,6 +167,7 @@ func (lc *LineClient) recoverToken(ctx context.Context) error {
 		})
 		return err
 	}
+	lc.recoverTime = time.Now()
 	lc.scheduleTokenRefresh()
 	return nil
 }
