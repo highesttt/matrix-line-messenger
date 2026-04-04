@@ -22,6 +22,40 @@ import (
 	"github.com/highesttt/matrix-line-messenger/pkg/line"
 )
 
+// mediaUnavailablePlaceholder returns a notice when media couldn't be downloaded from LINE.
+func mediaUnavailablePlaceholder(mediaType string, relatesTo *event.RelatesTo) *bridgev2.ConvertedMessage {
+	return &bridgev2.ConvertedMessage{
+		Parts: []*bridgev2.ConvertedMessagePart{
+			{
+				Type: event.EventMessage,
+				Content: &event.MessageEventContent{
+					MsgType:   event.MsgNotice,
+					Body:      fmt.Sprintf("[%s unavailable — LINE media expired before it could be bridged]", mediaType),
+					RelatesTo: relatesTo,
+				},
+			},
+		},
+	}
+}
+
+// decryptMediaData decrypts media using key material from the E2EE body payload
+// (keyMaterial field) or the ENC_KM content metadata field.
+// Returns data unchanged if no key is available.
+func (lc *LineClient) decryptMediaData(data []byte, decryptedBody string, contentMetadata map[string]string) ([]byte, error) {
+	if decryptedBody != "" && strings.Contains(decryptedBody, "keyMaterial") {
+		var info struct {
+			KeyMaterial string `json:"keyMaterial"`
+		}
+		if err := json.Unmarshal([]byte(decryptedBody), &info); err == nil && info.KeyMaterial != "" {
+			return lc.decryptImageData(data, info.KeyMaterial)
+		}
+	}
+	if encKM := contentMetadata["ENC_KM"]; encKM != "" && len(data) > 32 {
+		return lc.decryptImageData(data, encKM)
+	}
+	return data, nil
+}
+
 func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 	// Only process known content types; skip system messages (group created, member invited, etc.)
 	switch ContentType(msg.ContentType) {
@@ -180,42 +214,14 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					})
 
 					if err != nil {
-						lc.UserLogin.Bridge.Log.Warn().
-							Err(err).
-							Str("oid", oid).
-							Str("msg_id", data.ID).
-							Bool("plain_media", isPlainMedia).
+						lc.UserLogin.Bridge.Log.Warn().Err(err).Str("oid", oid).Str("msg_id", data.ID).Bool("plain_media", isPlainMedia).
 							Msg("Failed to download image from OBS, sending placeholder")
-						return &bridgev2.ConvertedMessage{
-							Parts: []*bridgev2.ConvertedMessagePart{
-								{
-									Type: event.EventMessage,
-									Content: &event.MessageEventContent{
-										MsgType:   event.MsgNotice,
-										Body:      "[Image unavailable — LINE media expired before it could be bridged]",
-										RelatesTo: replyRelatesTo,
-									},
-								},
-							},
-						}, nil
+						return mediaUnavailablePlaceholder("Image", replyRelatesTo), nil
 					}
 
-					// Decrypt image if it has keyMaterial (E2EE)
-					if decryptedBody != "" && strings.Contains(decryptedBody, "keyMaterial") {
-						var decryptInfo struct {
-							KeyMaterial string `json:"keyMaterial"`
-							FileName    string `json:"fileName"`
-						}
-						if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err == nil && decryptInfo.KeyMaterial != "" {
-							decryptedImg, err := lc.decryptImageData(imgData, decryptInfo.KeyMaterial)
-							if err != nil {
-								lc.UserLogin.Bridge.Log.Error().
-									Err(err).
-									Msg("Failed to decrypt image data")
-								return nil, fmt.Errorf("failed to decrypt image data: %w", err)
-							}
-							imgData = decryptedImg
-						}
+					imgData, err = lc.decryptMediaData(imgData, decryptedBody, data.ContentMetadata)
+					if err != nil {
+						return nil, fmt.Errorf("failed to decrypt image data: %w", err)
 					}
 
 					// Upload to Matrix
@@ -279,67 +285,14 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					})
 
 					if err != nil {
-						lc.UserLogin.Bridge.Log.Warn().
-							Err(err).
-							Str("oid", oid).
-							Str("msg_id", data.ID).
-							Bool("plain_media", isPlainMedia).
+						lc.UserLogin.Bridge.Log.Warn().Err(err).Str("oid", oid).Str("msg_id", data.ID).Bool("plain_media", isPlainMedia).
 							Msg("Failed to download video from OBS, sending placeholder")
-						return &bridgev2.ConvertedMessage{
-							Parts: []*bridgev2.ConvertedMessagePart{
-								{
-									Type: event.EventMessage,
-									Content: &event.MessageEventContent{
-										MsgType:   event.MsgNotice,
-										Body:      "[Video unavailable — LINE media expired before it could be bridged]",
-										RelatesTo: replyRelatesTo,
-									},
-								},
-							},
-						}, nil
+						return mediaUnavailablePlaceholder("Video", replyRelatesTo), nil
 					}
 
-					if decryptedBody != "" && strings.Contains(decryptedBody, "keyMaterial") {
-						var decryptInfo struct {
-							KeyMaterial string `json:"keyMaterial"`
-							FileName    string `json:"fileName"`
-						}
-						if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err == nil && decryptInfo.KeyMaterial != "" {
-							lc.UserLogin.Bridge.Log.Debug().
-								Str("key_material_len", fmt.Sprintf("%d", len(decryptInfo.KeyMaterial))).
-								Str("file_name", decryptInfo.FileName).
-								Msg("Decrypting E2EE video")
-
-							decryptedVideo, err := lc.decryptImageData(videoData, decryptInfo.KeyMaterial)
-							if err != nil {
-								lc.UserLogin.Bridge.Log.Error().
-									Err(err).
-									Msg("Failed to decrypt video data")
-								return nil, fmt.Errorf("failed to decrypt video data: %w", err)
-							}
-							videoData = decryptedVideo
-							lc.UserLogin.Bridge.Log.Info().
-								Int("decrypted_size", len(videoData)).
-								Msg("Successfully decrypted video")
-						}
-					}
-
-					if encKM := data.ContentMetadata["ENC_KM"]; encKM != "" && len(videoData) > 32 {
-						lc.UserLogin.Bridge.Log.Debug().
-							Str("enc_km_preview", encKM[:min(20, len(encKM))]+"...").
-							Msg("Decrypting video using ENC_KM from metadata")
-
-						decryptedVideo, err := lc.decryptImageData(videoData, encKM)
-						if err != nil {
-							lc.UserLogin.Bridge.Log.Error().
-								Err(err).
-								Msg("Failed to decrypt video data from ENC_KM")
-							return nil, fmt.Errorf("failed to decrypt video data: %w", err)
-						}
-						videoData = decryptedVideo
-						lc.UserLogin.Bridge.Log.Info().
-							Int("decrypted_size", len(videoData)).
-							Msg("Successfully decrypted video from ENC_KM")
+					videoData, err = lc.decryptMediaData(videoData, decryptedBody, data.ContentMetadata)
+					if err != nil {
+						return nil, fmt.Errorf("failed to decrypt video data: %w", err)
 					}
 
 					fileName := data.ContentMetadata["FILE_NAME"]
@@ -436,23 +389,9 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 						return e
 					})
 					if err != nil {
-						lc.UserLogin.Bridge.Log.Warn().
-							Err(err).
-							Str("oid", oid).
-							Bool("plain_media", isPlainMedia).
+						lc.UserLogin.Bridge.Log.Warn().Err(err).Str("oid", oid).Bool("plain_media", isPlainMedia).
 							Msg("Failed to download file from OBS, sending placeholder")
-						return &bridgev2.ConvertedMessage{
-							Parts: []*bridgev2.ConvertedMessagePart{
-								{
-									Type: event.EventMessage,
-									Content: &event.MessageEventContent{
-										MsgType:   event.MsgNotice,
-										Body:      "[File unavailable — LINE media expired before it could be bridged]",
-										RelatesTo: replyRelatesTo,
-									},
-								},
-							},
-						}, nil
+						return mediaUnavailablePlaceholder("File", replyRelatesTo), nil
 					}
 
 					// Try to decrypt using keyMaterial from encrypted payload
@@ -569,46 +508,14 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					})
 
 					if err != nil {
-						lc.UserLogin.Bridge.Log.Warn().
-							Err(err).
-							Str("oid", oid).
-							Str("msg_id", data.ID).
-							Bool("plain_media", isPlainMedia).
+						lc.UserLogin.Bridge.Log.Warn().Err(err).Str("oid", oid).Str("msg_id", data.ID).Bool("plain_media", isPlainMedia).
 							Msg("Failed to download audio from OBS, sending placeholder")
-						return &bridgev2.ConvertedMessage{
-							Parts: []*bridgev2.ConvertedMessagePart{
-								{
-									Type: event.EventMessage,
-									Content: &event.MessageEventContent{
-										MsgType:   event.MsgNotice,
-										Body:      "[Audio unavailable — LINE media expired before it could be bridged]",
-										RelatesTo: replyRelatesTo,
-									},
-								},
-							},
-						}, nil
+						return mediaUnavailablePlaceholder("Audio", replyRelatesTo), nil
 					}
 
-					// Decrypt audio if it has keyMaterial (E2EE)
-					if decryptedBody != "" && strings.Contains(decryptedBody, "keyMaterial") {
-						var decryptInfo struct {
-							KeyMaterial string `json:"keyMaterial"`
-						}
-						if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err == nil && decryptInfo.KeyMaterial != "" {
-							decryptedAudio, err := lc.decryptImageData(audioData, decryptInfo.KeyMaterial)
-							if err != nil {
-								return nil, fmt.Errorf("failed to decrypt audio data: %w", err)
-							}
-							audioData = decryptedAudio
-						}
-					}
-
-					if encKM := data.ContentMetadata["ENC_KM"]; encKM != "" && len(audioData) > 32 {
-						decryptedAudio, err := lc.decryptImageData(audioData, encKM)
-						if err != nil {
-							return nil, fmt.Errorf("failed to decrypt audio data: %w", err)
-						}
-						audioData = decryptedAudio
+					audioData, err = lc.decryptMediaData(audioData, decryptedBody, data.ContentMetadata)
+					if err != nil {
+						return nil, fmt.Errorf("failed to decrypt audio data: %w", err)
 					}
 
 					var duration int

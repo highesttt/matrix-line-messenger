@@ -415,10 +415,3 @@ func guessToType(mid string) ToType {
 	}
 	return ToUser
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
