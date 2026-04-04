@@ -29,7 +29,7 @@ type LineClient struct {
 	sentReqSeqs map[int]time.Time
 
 	noE2EEGroups map[string]time.Time // chatMid -> when group E2EE failure was cached
-	contactCache map[string]line.Contact
+	contactCache map[string]cachedContact
 }
 
 type peerKeyInfo struct {
@@ -37,6 +37,13 @@ type peerKeyInfo struct {
 	pub       string
 	noE2EE    bool      // true if peer has Letter Sealing off
 	checkedAt time.Time // when noE2EE was last verified
+}
+
+const contactCacheTTL = 1 * time.Hour
+
+type cachedContact struct {
+	line.Contact
+	cachedAt time.Time
 }
 
 var _ bridgev2.NetworkAPI = (*LineClient)(nil)
@@ -97,7 +104,7 @@ func (lc *LineClient) Connect(ctx context.Context) {
 		lc.peerKeys = make(map[string]peerKeyInfo)
 	}
 	if lc.contactCache == nil {
-		lc.contactCache = make(map[string]line.Contact)
+		lc.contactCache = make(map[string]cachedContact)
 	}
 	lc.reqSeqMu.Lock()
 	if lc.sentReqSeqs == nil {

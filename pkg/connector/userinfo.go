@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"go.mau.fi/util/ptr"
 
@@ -148,7 +149,6 @@ func (lc *LineClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) 
 }
 
 func (lc *LineClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
-	lc.UserLogin.Bridge.Log.Debug().Str("ghost_id", string(ghost.ID)).Msg("GetUserInfo called")
 	contact := lc.getContact(ctx, string(ghost.ID))
 	var avatar *bridgev2.Avatar
 	if contact.PicturePath != "" {
@@ -168,8 +168,8 @@ func (lc *LineClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*
 }
 
 func (lc *LineClient) getContact(ctx context.Context, mid string) line.Contact {
-	if contact, ok := lc.contactCache[mid]; ok {
-		return contact
+	if cached, ok := lc.contactCache[mid]; ok && time.Since(cached.cachedAt) < contactCacheTTL {
+		return cached.Contact
 	}
 
 	// Use GetProfile for our own user data
@@ -184,7 +184,7 @@ func (lc *LineClient) getContact(ctx context.Context, mid string) line.Contact {
 		}
 		if err == nil && profile != nil {
 			contact := line.Contact{Mid: mid, DisplayName: profile.DisplayName, PicturePath: profile.PicturePath}
-			lc.contactCache[mid] = contact
+			lc.contactCache[mid] = cachedContact{Contact: contact, cachedAt: time.Now()}
 			return contact
 		}
 		return line.Contact{Mid: mid, DisplayName: mid}
@@ -200,7 +200,7 @@ func (lc *LineClient) getContact(ctx context.Context, mid string) line.Contact {
 	}
 	if err == nil && res != nil && res.Contacts != nil {
 		if wrapper, ok := res.Contacts[mid]; ok {
-			lc.contactCache[mid] = wrapper.Contact
+			lc.contactCache[mid] = cachedContact{Contact: wrapper.Contact, cachedAt: time.Now()}
 			return wrapper.Contact
 		}
 	}
@@ -217,7 +217,7 @@ func (lc *LineClient) getContact(ctx context.Context, mid string) line.Contact {
 	if err == nil && buddy != nil {
 		lc.UserLogin.Bridge.Log.Debug().Str("mid", mid).Str("display_name", buddy.DisplayName).Str("picture_path", buddy.PicturePath).Msg("Got buddy profile")
 		contact := line.Contact{Mid: mid, DisplayName: buddy.DisplayName, PicturePath: buddy.PicturePath}
-		lc.contactCache[mid] = contact
+		lc.contactCache[mid] = cachedContact{Contact: contact, cachedAt: time.Now()}
 		return contact
 	}
 	if err != nil {

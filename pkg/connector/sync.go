@@ -284,8 +284,8 @@ func (lc *LineClient) generateNameFromMembers(members map[string]bool) string {
 		if mid == string(lc.UserLogin.ID) || mid == lc.Mid || strings.HasPrefix(mid, "c") || strings.HasPrefix(mid, "r") {
 			continue
 		}
-		if contact, ok := lc.contactCache[mid]; ok && contact.DisplayName != "" {
-			names = append(names, contact.DisplayName)
+		if cached, ok := lc.contactCache[mid]; ok && cached.DisplayName != "" {
+			names = append(names, cached.DisplayName)
 		}
 		count++
 		if count >= 20 {
@@ -417,6 +417,47 @@ func (lc *LineClient) pollLoop(ctx context.Context) {
 func (lc *LineClient) handleOperation(ctx context.Context, op line.Operation) {
 	// Type 25 = SEND_MESSAGE (Message sent by you from another device)
 	// Type 26 = RECEIVE_MESSAGE (Message received from another user)
+
+	if OperationType(op.Type) == OpContactUpdate {
+		mid := op.Param1
+		delete(lc.contactCache, mid)
+		contact := lc.getContact(ctx, mid)
+		name := contact.EffectiveDisplayName()
+		lc.UserLogin.Bridge.Log.Info().Str("mid", mid).Str("name", name).Msg("Contact updated")
+		ghost, err := lc.UserLogin.Bridge.GetGhostByID(ctx, makeUserID(mid))
+		if err == nil && ghost != nil {
+			ghost.UpdateInfo(ctx, &bridgev2.UserInfo{
+				Identifiers: []string{mid},
+				Name:        &name,
+			})
+		}
+		// Also update the DM portal room name
+		var avatar *bridgev2.Avatar
+		if contact.PicturePath != "" {
+			picturePath := contact.PicturePath
+			avatar = &bridgev2.Avatar{
+				ID: networkid.AvatarID(picturePath),
+				Get: func(ctx context.Context) ([]byte, error) {
+					return lc.GetAvatar(ctx, networkid.AvatarID(picturePath))
+				},
+			}
+		}
+		dmType := database.RoomTypeDM
+		portalKey := networkid.PortalKey{ID: makePortalID(mid), Receiver: lc.UserLogin.ID}
+		lc.UserLogin.Bridge.QueueRemoteEvent(lc.UserLogin, &simplevent.ChatResync{
+			EventMeta: simplevent.EventMeta{
+				Type:      bridgev2.RemoteEventChatResync,
+				PortalKey: portalKey,
+				Timestamp: time.Now(),
+			},
+			ChatInfo: &bridgev2.ChatInfo{
+				Type:   &dmType,
+				Name:   &name,
+				Avatar: avatar,
+			},
+		})
+		return
+	}
 
 	if OperationType(op.Type) == OpChatUpdate2 || OperationType(op.Type) == OpChatUpdate {
 		lc.UserLogin.Bridge.Log.Info().Str("chat_mid", op.Param1).Int("op_type", op.Type).Msg("Received chat update operation")
@@ -563,7 +604,15 @@ func (lc *LineClient) handleOperation(ctx context.Context, op line.Operation) {
 			return
 		}
 		lc.queueIncomingMessage(op.Message, op.Type)
+		return
 	}
+
+	lc.UserLogin.Bridge.Log.Debug().
+		Int("op_type", op.Type).
+		Str("param1", op.Param1).
+		Str("param2", op.Param2).
+		Str("param3", op.Param3).
+		Msg("Unhandled SSE operation")
 }
 
 func (lc *LineClient) syncSingleChat(ctx context.Context, op line.Operation) {
