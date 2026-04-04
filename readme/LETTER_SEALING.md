@@ -121,8 +121,8 @@ The bridge determines E2EE capability per-chat before sending:
 | Video to `LSOFF` / plain chats | Plain (`m` upload) | Verified |
 | File to `LSON` peer | E2EE (`emf` upload) | Verified |
 | File to `LSOFF` / plain chats | Plain (`m` upload) | Verified |
-| Audio to `LSON` peer | E2EE (`ema` upload) | Not tested |
-| Audio to `LSOFF` / plain chats | Plain (`m` upload) | Not tested |
+| Audio to `LSON` peer | E2EE (`ema` upload) | Verified |
+| Audio to `LSOFF` / plain chats | Plain (`m` upload) | Verified |
 
 ### Media receive (incoming to Beeper)
 
