@@ -25,12 +25,15 @@ import (
 func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 	// Only process known content types; skip system messages (group created, member invited, etc.)
 	switch ContentType(msg.ContentType) {
-	case ContentText, ContentImage, ContentVideo, ContentSticker, ContentFile:
+	case ContentText, ContentImage, ContentVideo, ContentAudio, ContentSticker, ContentFile:
 		// supported — continue
 	default:
 		lc.UserLogin.Bridge.Log.Debug().
 			Int("content_type", msg.ContentType).
 			Str("msg_id", msg.ID).
+			Interface("content_metadata", msg.ContentMetadata).
+			Str("text", msg.Text).
+			Int("chunk_count", len(msg.Chunks)).
 			Msg("Skipping unsupported content type")
 		return
 	}
@@ -545,6 +548,111 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 										MimeType: mimeType,
 										Size:     len(fileData),
 									},
+									RelatesTo: replyRelatesTo,
+								},
+							},
+						},
+					}, nil
+				}
+			}
+
+			// Handle Audio
+			if ContentType(data.ContentType) == ContentAudio {
+				oid := data.ContentMetadata["OID"]
+				isPlainMedia := oid == ""
+
+				// For plain media, the audio is stored at r/talk/m/{messageID}
+				if isPlainMedia {
+					oid = data.ID
+				}
+
+				if oid != "" {
+					sid := "ema"
+					if isPlainMedia {
+						sid = "m"
+					}
+					audioData, err := client.DownloadOBSWithSID(oid, data.ID, sid)
+
+					if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+						if errRecover := lc.recoverToken(ctx); errRecover == nil {
+							client = line.NewClient(lc.AccessToken)
+							audioData, err = client.DownloadOBSWithSID(oid, data.ID, sid)
+						}
+					}
+
+					if err != nil {
+						lc.UserLogin.Bridge.Log.Warn().
+							Err(err).
+							Str("oid", oid).
+							Str("msg_id", data.ID).
+							Bool("plain_media", isPlainMedia).
+							Msg("Failed to download audio from OBS, sending placeholder")
+						return &bridgev2.ConvertedMessage{
+							Parts: []*bridgev2.ConvertedMessagePart{
+								{
+									Type: event.EventMessage,
+									Content: &event.MessageEventContent{
+										MsgType:   event.MsgNotice,
+										Body:      "[Audio unavailable — LINE media expired before it could be bridged]",
+										RelatesTo: replyRelatesTo,
+									},
+								},
+							},
+						}, nil
+					}
+
+					// Decrypt audio if it has keyMaterial (E2EE)
+					if decryptedBody != "" && strings.Contains(decryptedBody, "keyMaterial") {
+						var decryptInfo struct {
+							KeyMaterial string `json:"keyMaterial"`
+						}
+						if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err == nil && decryptInfo.KeyMaterial != "" {
+							decryptedAudio, err := lc.decryptImageData(audioData, decryptInfo.KeyMaterial)
+							if err != nil {
+								return nil, fmt.Errorf("failed to decrypt audio data: %w", err)
+							}
+							audioData = decryptedAudio
+						}
+					}
+
+					if encKM := data.ContentMetadata["ENC_KM"]; encKM != "" && len(audioData) > 32 {
+						decryptedAudio, err := lc.decryptImageData(audioData, encKM)
+						if err != nil {
+							return nil, fmt.Errorf("failed to decrypt audio data: %w", err)
+						}
+						audioData = decryptedAudio
+					}
+
+					var duration int
+					if durationStr := data.ContentMetadata["DURATION"]; durationStr != "" {
+						if d, err := strconv.Atoi(durationStr); err == nil {
+							duration = d
+						}
+					}
+
+					mxc, file, err := intent.UploadMedia(ctx, portal.MXID, audioData, "audio.m4a", "audio/mp4")
+					if err != nil {
+						return nil, fmt.Errorf("failed to upload audio to matrix: %w", err)
+					}
+
+					audioInfo := &event.FileInfo{
+						MimeType: "audio/mp4",
+						Size:     len(audioData),
+					}
+					if duration > 0 {
+						audioInfo.Duration = duration
+					}
+
+					return &bridgev2.ConvertedMessage{
+						Parts: []*bridgev2.ConvertedMessagePart{
+							{
+								Type: event.EventMessage,
+								Content: &event.MessageEventContent{
+									MsgType:   event.MsgAudio,
+									Body:      "audio.m4a",
+									URL:       mxc,
+									File:      file,
+									Info:      audioInfo,
 									RelatesTo: replyRelatesTo,
 								},
 							},
