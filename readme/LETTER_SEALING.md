@@ -6,7 +6,7 @@ This note summarizes what issue [#42](https://github.com/highesttt/matrix-line-m
 
 - The bridge supports both `LSON` and `LSOFF` accounts for login and messaging.
 - Text messages work in all combinations: `LSON`/`LSOFF` direct messages, mixed groups, and business/bot accounts.
-- Image, video, and file sending works for all user types. E2EE media uses encrypted OBS upload; plain media uses the `r/talk/m` post-send upload path.
+- Image, video, file, and audio sending works for all user types. E2EE media uses encrypted OBS upload; plain media uses the `r/talk/m` post-send upload path.
 - Transparent PNGs are composited onto a white background before upload, matching LINE native client behavior.
 
 ## Terms
@@ -121,7 +121,8 @@ The bridge determines E2EE capability per-chat before sending:
 | Video to `LSOFF` / plain chats | Plain (`m` upload) | Verified |
 | File to `LSON` peer | E2EE (`emf` upload) | Verified |
 | File to `LSOFF` / plain chats | Plain (`m` upload) | Verified |
-| Audio send (any) | Not implemented | Known gap |
+| Audio to `LSON` peer | E2EE (`ema` upload) | Not tested |
+| Audio to `LSOFF` / plain chats | Plain (`m` upload) | Not tested |
 
 ### Media receive (incoming to Beeper)
 
@@ -133,6 +134,8 @@ The bridge determines E2EE capability per-chat before sending:
 | Incoming video from E2EE chat | E2EE (`emv` download) | Not tested |
 | Incoming file from plain chat | Plain (`m` download) | Not tested |
 | Incoming file from E2EE chat | E2EE (`emf` download) | Not tested |
+| Incoming audio from plain chat | Plain (`m` download) | Verified |
+| Incoming audio from E2EE chat | E2EE (`ema` download) | Verified |
 
 ### Re-login and token refresh
 
