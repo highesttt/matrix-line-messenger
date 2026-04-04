@@ -198,6 +198,7 @@ func (lc *LineClient) Connect(ctx context.Context) {
 	}
 
 	go lc.syncChats(ctx)
+	go lc.syncDMChats(ctx)
 	go lc.prefetchMessages(ctx)
 	go lc.pollLoop(ctx)
 }
