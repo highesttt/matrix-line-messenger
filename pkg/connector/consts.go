@@ -12,6 +12,7 @@ const (
 	OpSendMessage    OperationType = 25
 	OpReceiveMessage OperationType = 26
 	OpReaction       OperationType = 140
+	OpContactUpdate  OperationType = 49
 )
 
 // ContentType values for LINE messages.
