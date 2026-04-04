@@ -169,26 +169,15 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 
 				if oid != "" {
 					var imgData []byte
-					var err error
-					if isPlainMedia {
-						imgData, err = client.DownloadOBSWithSID(oid, data.ID, "m")
-					} else {
-						imgData, err = client.DownloadOBS(oid, data.ID)
-					}
-
-					// Refresh token if we get a 401
-					if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
-						if errRecover := lc.recoverToken(ctx); errRecover == nil {
-							client = line.NewClient(lc.AccessToken)
-							if isPlainMedia {
-								imgData, err = client.DownloadOBSWithSID(oid, data.ID, "m")
-							} else {
-								imgData, err = client.DownloadOBS(oid, data.ID)
-							}
+					_, err := lc.callWithRecovery(ctx, func(c *line.Client) error {
+						var e error
+						if isPlainMedia {
+							imgData, e = c.DownloadOBSWithSID(oid, data.ID, "m")
 						} else {
-							lc.UserLogin.Bridge.Log.Warn().Err(errRecover).Msg("Failed to recover token for OBS download")
+							imgData, e = c.DownloadOBS(oid, data.ID)
 						}
-					}
+						return e
+					})
 
 					if err != nil {
 						lc.UserLogin.Bridge.Log.Warn().
@@ -282,16 +271,12 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					if isPlainMedia {
 						sid = "m"
 					}
-					videoData, err := client.DownloadOBSWithSID(oid, data.ID, sid)
-
-					if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
-						if errRecover := lc.recoverToken(ctx); errRecover == nil {
-							client = line.NewClient(lc.AccessToken)
-							videoData, err = client.DownloadOBSWithSID(oid, data.ID, sid)
-						} else {
-							lc.UserLogin.Bridge.Log.Warn().Err(errRecover).Msg("Failed to recover token for OBS download")
-						}
-					}
+					var videoData []byte
+					_, err := lc.callWithRecovery(ctx, func(c *line.Client) error {
+						var e error
+						videoData, e = c.DownloadOBSWithSID(oid, data.ID, sid)
+						return e
+					})
 
 					if err != nil {
 						lc.UserLogin.Bridge.Log.Warn().
@@ -444,7 +429,12 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					if isPlainMedia {
 						sid = "m"
 					}
-					fileData, err := client.DownloadOBSWithSID(oid, data.ID, sid)
+					var fileData []byte
+					_, err := lc.callWithRecovery(ctx, func(c *line.Client) error {
+						var e error
+						fileData, e = c.DownloadOBSWithSID(oid, data.ID, sid)
+						return e
+					})
 					if err != nil {
 						lc.UserLogin.Bridge.Log.Warn().
 							Err(err).
@@ -571,14 +561,12 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					if isPlainMedia {
 						sid = "m"
 					}
-					audioData, err := client.DownloadOBSWithSID(oid, data.ID, sid)
-
-					if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
-						if errRecover := lc.recoverToken(ctx); errRecover == nil {
-							client = line.NewClient(lc.AccessToken)
-							audioData, err = client.DownloadOBSWithSID(oid, data.ID, sid)
-						}
-					}
+					var audioData []byte
+					_, err := lc.callWithRecovery(ctx, func(c *line.Client) error {
+						var e error
+						audioData, e = c.DownloadOBSWithSID(oid, data.ID, sid)
+						return e
+					})
 
 					if err != nil {
 						lc.UserLogin.Bridge.Log.Warn().

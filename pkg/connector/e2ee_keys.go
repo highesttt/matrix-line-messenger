@@ -18,25 +18,16 @@ func (lc *LineClient) fetchAndUnwrapGroupKey(ctx context.Context, chatMid string
 		return fmt.Errorf("E2EE manager not initialized")
 	}
 
-	client := line.NewClient(lc.AccessToken)
-	fetch := func() (*line.E2EEGroupSharedKey, error) {
+	var sharedKey *line.E2EEGroupSharedKey
+	_, err := lc.callWithRecovery(ctx, func(c *line.Client) error {
+		var e error
 		if groupKeyID > 0 {
-			return client.GetE2EEGroupSharedKey(chatMid, groupKeyID)
-		}
-		return client.GetLastE2EEGroupSharedKey(chatMid)
-	}
-
-	sharedKey, err := fetch()
-	// Don't attempt token recovery if the error is actually a "no E2EE group key" error
-	// (e.g., TalkException code 1/5/98 wrapped in a 10051 HTTP error).
-	if err != nil && !line.IsNoUsableE2EEGroupKey(err) && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
-		if errRecover := lc.recoverToken(ctx); errRecover == nil {
-			client = line.NewClient(lc.AccessToken)
-			sharedKey, err = fetch()
+			sharedKey, e = c.GetE2EEGroupSharedKey(chatMid, groupKeyID)
 		} else {
-			return fmt.Errorf("failed to recover token before fetching group key: %w", errRecover)
+			sharedKey, e = c.GetLastE2EEGroupSharedKey(chatMid)
 		}
-	}
+		return e
+	})
 	if err != nil {
 		return err
 	}
@@ -91,14 +82,12 @@ func (lc *LineClient) ensurePeerKey(ctx context.Context, mid string) (int, strin
 			return cached.raw, cached.pub, nil
 		}
 	}
-	client := line.NewClient(lc.AccessToken)
-	res, err := client.NegotiateE2EEPublicKey(mid)
-	if err != nil && !line.IsNoUsableE2EEPublicKey(err) && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
-		if errRecover := lc.recoverToken(ctx); errRecover == nil {
-			client = line.NewClient(lc.AccessToken)
-			res, err = client.NegotiateE2EEPublicKey(mid)
-		}
-	}
+	var res *line.E2EEPublicKey
+	_, err := lc.callWithRecovery(ctx, func(c *line.Client) error {
+		var e error
+		res, e = c.NegotiateE2EEPublicKey(mid)
+		return e
+	})
 	if err != nil {
 		// Cache negative result so we don't keep hitting the API
 		if line.IsNoUsableE2EEPublicKey(err) {
