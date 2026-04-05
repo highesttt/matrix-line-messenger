@@ -18,25 +18,16 @@ func (lc *LineClient) fetchAndUnwrapGroupKey(ctx context.Context, chatMid string
 		return fmt.Errorf("E2EE manager not initialized")
 	}
 
-	client := line.NewClient(lc.AccessToken)
-	fetch := func() (*line.E2EEGroupSharedKey, error) {
+	var sharedKey *line.E2EEGroupSharedKey
+	_, err := lc.callWithRecovery(ctx, func(c *line.Client) error {
+		var e error
 		if groupKeyID > 0 {
-			return client.GetE2EEGroupSharedKey(chatMid, groupKeyID)
-		}
-		return client.GetLastE2EEGroupSharedKey(chatMid)
-	}
-
-	sharedKey, err := fetch()
-	// Don't attempt token recovery if the error is actually a "no E2EE group key" error
-	// (e.g., TalkException code 1/5/98 wrapped in a 10051 HTTP error).
-	if err != nil && !line.IsNoUsableE2EEGroupKey(err) && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
-		if errRecover := lc.recoverToken(ctx); errRecover == nil {
-			client = line.NewClient(lc.AccessToken)
-			sharedKey, err = fetch()
+			sharedKey, e = c.GetE2EEGroupSharedKey(chatMid, groupKeyID)
 		} else {
-			return fmt.Errorf("failed to recover token before fetching group key: %w", errRecover)
+			sharedKey, e = c.GetLastE2EEGroupSharedKey(chatMid)
 		}
-	}
+		return e
+	})
 	if err != nil {
 		return err
 	}
@@ -73,28 +64,28 @@ func (lc *LineClient) fetchAndUnwrapGroupKey(ctx context.Context, chatMid string
 	return nil
 }
 
-func (lc *LineClient) ensurePeerKey(_ context.Context, mid string) (int, string, error) {
-	if lc.peerKeys == nil {
-		lc.peerKeys = make(map[string]peerKeyInfo)
-	}
-	if cached, ok := lc.peerKeys[mid]; ok {
-		// Cached as Letter Sealing off — return error unless TTL expired
-		if cached.noE2EE {
-			if time.Since(cached.checkedAt) < noE2EETTL {
-				return 0, "", line.ErrNoUsableE2EEPublicKey
-			}
-			// TTL expired, re-negotiate below
-		} else if cached.raw != 0 && cached.pub != "" {
+func (lc *LineClient) ensurePeerKey(ctx context.Context, mid string) (int, string, error) {
+	cached, ok := lc.peerKeys[mid]
+
+	if ok {
+		if cached.noE2EE && time.Since(cached.checkedAt) < noE2EETTL {
+			return 0, "", line.ErrNoUsableE2EEPublicKey
+		}
+		if !cached.noE2EE && cached.raw != 0 && cached.pub != "" {
 			if lc.E2EE != nil {
 				lc.E2EE.RegisterPeerPublicKey(cached.raw, cached.pub)
 			}
 			return cached.raw, cached.pub, nil
 		}
 	}
-	client := line.NewClient(lc.AccessToken)
-	res, err := client.NegotiateE2EEPublicKey(mid)
+
+	var res *line.E2EEPublicKey
+	_, err := lc.callWithRecovery(ctx, func(c *line.Client) error {
+		var e error
+		res, e = c.NegotiateE2EEPublicKey(mid)
+		return e
+	})
 	if err != nil {
-		// Cache negative result so we don't keep hitting the API
 		if line.IsNoUsableE2EEPublicKey(err) {
 			lc.peerKeys[mid] = peerKeyInfo{noE2EE: true, checkedAt: time.Now()}
 			lc.UserLogin.Bridge.Log.Info().Str("peer", mid).Msg("Peer has Letter Sealing disabled, will send plain text")
@@ -115,18 +106,12 @@ func (lc *LineClient) ensurePeerKey(_ context.Context, mid string) (int, string,
 
 // isGroupNoE2EE checks if a group is cached as having no E2EE shared key.
 func (lc *LineClient) isGroupNoE2EE(chatMid string) bool {
-	if lc.noE2EEGroups == nil {
-		return false
-	}
 	checkedAt, ok := lc.noE2EEGroups[chatMid]
 	return ok && time.Since(checkedAt) < noE2EETTL
 }
 
 // markGroupNoE2EE caches a group as having no E2EE shared key.
 func (lc *LineClient) markGroupNoE2EE(chatMid string) {
-	if lc.noE2EEGroups == nil {
-		lc.noE2EEGroups = make(map[string]time.Time)
-	}
 	lc.noE2EEGroups[chatMid] = time.Now()
 }
 
@@ -136,10 +121,9 @@ func (lc *LineClient) clearGroupNoE2EE(chatMid string) {
 }
 
 func (lc *LineClient) ensurePeerKeyByID(_ context.Context, mid string, keyID int) (int, string, error) {
-	if lc.peerKeys == nil {
-		lc.peerKeys = make(map[string]peerKeyInfo)
-	}
-	if cached, ok := lc.peerKeys[mid]; ok && cached.raw == keyID && cached.pub != "" {
+	cached, ok := lc.peerKeys[mid]
+
+	if ok && cached.raw == keyID && cached.pub != "" {
 		if lc.E2EE != nil {
 			lc.E2EE.RegisterPeerPublicKey(cached.raw, cached.pub)
 		}
@@ -147,7 +131,6 @@ func (lc *LineClient) ensurePeerKeyByID(_ context.Context, mid string, keyID int
 	}
 
 	client := line.NewClient(lc.AccessToken)
-	// keyVersion 1
 	res, err := client.GetE2EEPublicKey(mid, 1, keyID)
 	if err != nil {
 		return 0, "", err
@@ -163,7 +146,6 @@ func (lc *LineClient) ensurePeerKeyByID(_ context.Context, mid string, keyID int
 	}
 
 	pk := peerKeyInfo{raw: int(resKeyID), pub: res.PublicKey}
-	// Cache the fetched key so subsequent lookups reuse it.
 	lc.peerKeys[mid] = pk
 	if lc.E2EE != nil {
 		lc.E2EE.RegisterPeerPublicKey(pk.raw, pk.pub)
@@ -178,11 +160,9 @@ func (lc *LineClient) ensurePeerKeyForMessage(ctx context.Context, msg *line.Mes
 
 	// If we receive an encrypted message from a peer we cached as noE2EE,
 	// they must have enabled Letter Sealing — invalidate the cache.
-	if lc.peerKeys != nil {
-		if cached, ok := lc.peerKeys[msg.From]; ok && cached.noE2EE {
-			lc.UserLogin.Bridge.Log.Info().Str("peer", msg.From).Msg("Received encrypted message from peer previously cached as noE2EE, invalidating cache")
-			delete(lc.peerKeys, msg.From)
-		}
+	if cached, ok := lc.peerKeys[msg.From]; ok && cached.noE2EE {
+		lc.UserLogin.Bridge.Log.Info().Str("peer", msg.From).Msg("Received encrypted message from peer previously cached as noE2EE, invalidating cache")
+		delete(lc.peerKeys, msg.From)
 	}
 
 	// Group messages have a different chunk layout

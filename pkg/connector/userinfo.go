@@ -100,14 +100,12 @@ func (lc *LineClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) 
 	mid := string(portal.ID)
 	lowerMid := strings.ToLower(mid)
 	if strings.HasPrefix(lowerMid, "c") || strings.HasPrefix(lowerMid, "r") {
-		client := line.NewClient(lc.AccessToken)
-		res, err := client.GetChats([]string{mid}, true, true)
-		if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
-			if errRecover := lc.recoverToken(ctx); errRecover == nil {
-				client = line.NewClient(lc.AccessToken)
-				res, err = client.GetChats([]string{mid}, true, true)
-			}
-		}
+		var res *line.GetChatsResponse
+		_, err := lc.callWithRecovery(ctx, func(c *line.Client) error {
+			var e error
+			res, e = c.GetChats([]string{mid}, true, true)
+			return e
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -176,20 +174,19 @@ func (lc *LineClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*
 }
 
 func (lc *LineClient) getContact(ctx context.Context, mid string) line.Contact {
-	if cached, ok := lc.contactCache[mid]; ok && time.Since(cached.cachedAt) < contactCacheTTL {
+	cached, cacheHit := lc.contactCache[mid]
+	if cacheHit && time.Since(cached.cachedAt) < contactCacheTTL {
 		return cached.Contact
 	}
 
 	// Use GetProfile for our own user data
 	if mid == lc.Mid || mid == string(lc.UserLogin.ID) {
-		client := line.NewClient(lc.AccessToken)
-		profile, err := client.GetProfile()
-		if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
-			if errRecover := lc.recoverToken(ctx); errRecover == nil {
-				client = line.NewClient(lc.AccessToken)
-				profile, err = client.GetProfile()
-			}
-		}
+		var profile *line.Profile
+		_, err := lc.callWithRecovery(ctx, func(c *line.Client) error {
+			var e error
+			profile, e = c.GetProfile()
+			return e
+		})
 		if err == nil && profile != nil {
 			contact := line.Contact{Mid: mid, DisplayName: profile.DisplayName, PicturePath: profile.PicturePath}
 			lc.contactCache[mid] = cachedContact{Contact: contact, cachedAt: time.Now()}
@@ -198,14 +195,12 @@ func (lc *LineClient) getContact(ctx context.Context, mid string) line.Contact {
 		return line.Contact{Mid: mid, DisplayName: mid}
 	}
 
-	client := line.NewClient(lc.AccessToken)
-	res, err := client.GetContactsV2([]string{mid})
-	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
-		if errRecover := lc.recoverToken(ctx); errRecover == nil {
-			client = line.NewClient(lc.AccessToken)
-			res, err = client.GetContactsV2([]string{mid})
-		}
-	}
+	var res *line.ContactsResponse
+	_, err := lc.callWithRecovery(ctx, func(c *line.Client) error {
+		var e error
+		res, e = c.GetContactsV2([]string{mid})
+		return e
+	})
 	if err == nil && res != nil && res.Contacts != nil {
 		if wrapper, ok := res.Contacts[mid]; ok {
 			lc.contactCache[mid] = cachedContact{Contact: wrapper.Contact, cachedAt: time.Now()}
@@ -215,13 +210,12 @@ func (lc *LineClient) getContact(ctx context.Context, mid string) line.Contact {
 
 	// Fall back to BuddyService for official/business accounts
 	lc.UserLogin.Bridge.Log.Debug().Str("mid", mid).Msg("Contact not found via GetContactsV2, trying BuddyService")
-	buddy, err := client.GetBuddyProfile(mid)
-	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
-		if errRecover := lc.recoverToken(ctx); errRecover == nil {
-			client = line.NewClient(lc.AccessToken)
-			buddy, err = client.GetBuddyProfile(mid)
-		}
-	}
+	var buddy *line.BuddyProfile
+	_, err = lc.callWithRecovery(ctx, func(c *line.Client) error {
+		var e error
+		buddy, e = c.GetBuddyProfile(mid)
+		return e
+	})
 	if err == nil && buddy != nil {
 		lc.UserLogin.Bridge.Log.Debug().Str("mid", mid).Str("display_name", buddy.DisplayName).Str("picture_path", buddy.PicturePath).Msg("Got buddy profile")
 		contact := line.Contact{Mid: mid, DisplayName: buddy.DisplayName, PicturePath: buddy.PicturePath}

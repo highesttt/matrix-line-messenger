@@ -23,93 +23,80 @@ import (
 	"golang.org/x/image/draw"
 )
 
-// AES-256-CTR
+// deriveFileKeys derives AES encryption key, HMAC key, and nonce from key material
+// using HKDF (SHA-256, no salt, info="FileEncryption").
+// Returns encKey (32 bytes), macKey (32 bytes), nonce (12 bytes).
+func deriveFileKeys(keyMaterial []byte) (encKey, macKey, nonce []byte, err error) {
+	kdf := hkdf.New(sha256.New, keyMaterial, nil, []byte("FileEncryption"))
+	derived := make([]byte, 76)
+	if _, err := io.ReadFull(kdf, derived); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to derive keys: %w", err)
+	}
+	return derived[0:32], derived[32:64], derived[64:76], nil
+}
+
+// newCTRStream creates an AES-256-CTR cipher stream from an encryption key and nonce.
+// The 16-byte counter is composed of nonce (12 bytes) + zero counter (4 bytes).
+func newCTRStream(encKey, nonce []byte) (cipher.Stream, error) {
+	block, err := aes.NewCipher(encKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+	}
+	counter := make([]byte, 16)
+	copy(counter, nonce)
+	return cipher.NewCTR(block, counter), nil
+}
+
 // LINE's E2EE file format: [encrypted_data][32-byte HMAC]
-// The keyMaterial is derived using HKDF to get encKey (32), macKey (32), and nonce (12 bytes)
 func (lc *LineClient) decryptImageData(encryptedData []byte, keyMaterialB64 string) ([]byte, error) {
 	keyMaterial, err := base64.StdEncoding.DecodeString(keyMaterialB64)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode key material: %w", err)
 	}
 
-	// Derive keys using HKDF (SHA-256, no salt, info="FileEncryption")
-	// Derives 76 bytes: encKey(32) + macKey(32) + nonce(12)
-	kdf := hkdf.New(sha256.New, keyMaterial, nil, []byte("FileEncryption"))
-	derived := make([]byte, 76)
-	if _, err := io.ReadFull(kdf, derived); err != nil {
-		return nil, fmt.Errorf("failed to derive keys: %w", err)
+	encKey, _, nonce, err := deriveFileKeys(keyMaterial)
+	if err != nil {
+		return nil, err
 	}
-
-	encKey := derived[0:32]
-	// macKey := derived[32:64] // for HMAC verification
-	nonce := derived[64:76]
-
-	// Create 16-byte counter: nonce(12 bytes) + zero counter(4 bytes)
-	counter := make([]byte, 16)
-	copy(counter, nonce)
-	// Last 4 bytes remain zero
 
 	if len(encryptedData) < 32 {
 		return nil, fmt.Errorf("encrypted data too short (< 32 bytes for HMAC)")
 	}
 	encryptedData = encryptedData[:len(encryptedData)-32]
 
-	block, err := aes.NewCipher(encKey)
+	stream, err := newCTRStream(encKey, nonce)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+		return nil, err
 	}
-
-	stream := cipher.NewCTR(block, counter)
 
 	decrypted := make([]byte, len(encryptedData))
 	stream.XORKeyStream(decrypted, encryptedData)
-
 	return decrypted, nil
 }
 
-// AES-256-CTR
 func (lc *LineClient) encryptFileData(plainData []byte) ([]byte, string, error) {
 	keyMaterial := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, keyMaterial); err != nil {
 		return nil, "", fmt.Errorf("failed to generate key material: %w", err)
 	}
 
-	// Derive keys using HKDF (SHA-256, no salt, info="FileEncryption")
-	// Derives 76 bytes: encKey(32) + macKey(32) + nonce(12)
-	kdf := hkdf.New(sha256.New, keyMaterial, nil, []byte("FileEncryption"))
-	derived := make([]byte, 76)
-	if _, err := io.ReadFull(kdf, derived); err != nil {
-		return nil, "", fmt.Errorf("failed to derive keys: %w", err)
-	}
-
-	encKey := derived[0:32]
-	macKey := derived[32:64]
-	nonce := derived[64:76]
-
-	// Create 16-byte counter: nonce(12 bytes) + zero counter(4 bytes)
-	counter := make([]byte, 16)
-	copy(counter, nonce)
-
-	block, err := aes.NewCipher(encKey)
+	encKey, macKey, nonce, err := deriveFileKeys(keyMaterial)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create AES cipher: %w", err)
+		return nil, "", err
 	}
 
-	stream := cipher.NewCTR(block, counter)
+	stream, err := newCTRStream(encKey, nonce)
+	if err != nil {
+		return nil, "", err
+	}
 
 	encrypted := make([]byte, len(plainData))
 	stream.XORKeyStream(encrypted, plainData)
 
 	h := hmac.New(sha256.New, macKey)
 	h.Write(encrypted)
-	hmacSum := h.Sum(nil)
-
-	// LINE E2EE file format: [encrypted_data][32-byte HMAC]
-	result := append(encrypted, hmacSum...)
-
-	keyMaterialB64 := base64.StdEncoding.EncodeToString(keyMaterial)
-
-	return result, keyMaterialB64, nil
+	result := append(encrypted, h.Sum(nil)...)
+	return result, base64.StdEncoding.EncodeToString(keyMaterial), nil
 }
 
 // encryptVideoData encrypts video data with HMAC computed on chunk hashes
@@ -119,39 +106,24 @@ func (lc *LineClient) encryptVideoData(plainData []byte) ([]byte, string, error)
 		return nil, "", fmt.Errorf("failed to generate key material: %w", err)
 	}
 
-	kdf := hkdf.New(sha256.New, keyMaterial, nil, []byte("FileEncryption"))
-	derived := make([]byte, 76)
-	if _, err := io.ReadFull(kdf, derived); err != nil {
-		return nil, "", fmt.Errorf("failed to derive keys: %w", err)
-	}
-
-	encKey := derived[0:32]
-	macKey := derived[32:64]
-	nonce := derived[64:76]
-
-	counter := make([]byte, 16)
-	copy(counter, nonce)
-
-	block, err := aes.NewCipher(encKey)
+	encKey, macKey, nonce, err := deriveFileKeys(keyMaterial)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create AES cipher: %w", err)
+		return nil, "", err
 	}
 
-	stream := cipher.NewCTR(block, counter)
+	stream, err := newCTRStream(encKey, nonce)
+	if err != nil {
+		return nil, "", err
+	}
 
 	encrypted := make([]byte, len(plainData))
 	stream.XORKeyStream(encrypted, plainData)
 
-	// For videos: compute HMAC on chunk hashes
 	chunkHashes := generateChunkHashes(encrypted)
 	h := hmac.New(sha256.New, macKey)
 	h.Write(chunkHashes)
-	hmacSum := h.Sum(nil)
-
-	result := append(encrypted, hmacSum...)
-	keyMaterialB64 := base64.StdEncoding.EncodeToString(keyMaterial)
-
-	return result, keyMaterialB64, nil
+	result := append(encrypted, h.Sum(nil)...)
+	return result, base64.StdEncoding.EncodeToString(keyMaterial), nil
 }
 
 func generateThumbnail(imageData []byte) ([]byte, int, int, error) {
@@ -202,24 +174,15 @@ func encryptThumbnail(thumbnailData []byte, keyMaterialB64 string) ([]byte, erro
 		return nil, fmt.Errorf("failed to decode key material: %w", err)
 	}
 
-	kdf := hkdf.New(sha256.New, keyMaterial, nil, []byte("FileEncryption"))
-	derived := make([]byte, 76)
-	if _, err := io.ReadFull(kdf, derived); err != nil {
-		return nil, fmt.Errorf("failed to derive keys: %w", err)
-	}
-
-	encKey := derived[0:32]
-	macKey := derived[32:64]
-	nonce := derived[64:76]
-
-	counter := make([]byte, 16)
-	copy(counter, nonce)
-
-	block, err := aes.NewCipher(encKey)
+	encKey, macKey, nonce, err := deriveFileKeys(keyMaterial)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create cipher: %w", err)
+		return nil, err
 	}
-	stream := cipher.NewCTR(block, counter)
+
+	stream, err := newCTRStream(encKey, nonce)
+	if err != nil {
+		return nil, err
+	}
 
 	encrypted := make([]byte, len(thumbnailData))
 	stream.XORKeyStream(encrypted, thumbnailData)

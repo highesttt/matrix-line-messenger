@@ -8,15 +8,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog"
 
 	gen "github.com/highesttt/matrix-line-messenger/pkg"
 	"github.com/highesttt/matrix-line-messenger/pkg/line/password"
 	"github.com/highesttt/matrix-line-messenger/pkg/line/secret"
 )
+
+var logger = zerolog.New(os.Stderr).With().Timestamp().Str("component", "line-client").Logger()
 
 const (
 	BaseURL          = "https://line-chrome-gw.line-apps.com/api/talk/thrift/Talk"
@@ -61,7 +65,7 @@ func (c *Client) Login(email, pass, certificate string) (*LoginResult, error) {
 	respBytes, err := c.LoginV2(rsaKey.KeyName, encryptedPass, certificate, secretRes.Secret)
 	if err != nil && isLoginNotSupported(err) {
 		// LSOFF: E2EE login not supported, retry without secret using fresh RSA key
-		log.Printf("[LINE] E2EE login not supported, retrying without secret (LSOFF)")
+		logger.Info().Msg("E2EE login not supported, retrying without secret (LSOFF)")
 		noE2EE = true
 		rsaKey2, err2 := c.GetRSAKeyInfo()
 		if err2 != nil {
@@ -173,7 +177,7 @@ func (c *Client) waitForLoginJQ(verifier string) (*LoginResult, error) {
 		return nil, fmt.Errorf("JQ polling: unexpected authPhase %q", wrapper.Data.Result.AuthPhase)
 	}
 
-	log.Printf("[LINE] JQ poll verified, finalizing non-E2EE login")
+	logger.Info().Msg("JQ poll verified, finalizing non-E2EE login")
 	res, err := c.LoginV2WithVerifier(verifier)
 	if err != nil {
 		return nil, fmt.Errorf("non-E2EE login finalization failed: %w", err)
@@ -232,10 +236,10 @@ func (c *Client) waitForLoginLF1(verifier string) (*LoginResult, error) {
 	// LSON path: confirm E2EE handshake first, then finalize with verifier
 	if meta.EncryptedKeyChain != "" && meta.PublicKey != "" {
 		if err := c.ConfirmE2EELogin(verifier, meta.PublicKey, meta.EncryptedKeyChain); err != nil {
-			log.Printf("[LINE] ConfirmE2EELogin failed: %v", err)
+			logger.Warn().Err(err).Msg("ConfirmE2EELogin failed")
 		} else {
 			if res, err := c.LoginV2WithVerifier(verifier); err != nil {
-				log.Printf("[LINE] LoginV2WithVerifier failed: %v", err)
+				logger.Warn().Err(err).Msg("LoginV2WithVerifier failed")
 			} else {
 				res.EncryptedKeyChain = meta.EncryptedKeyChain
 				res.E2EEPublicKey = meta.PublicKey
@@ -255,7 +259,7 @@ func (c *Client) waitForLoginLF1(verifier string) (*LoginResult, error) {
 	}
 
 	// Fallback: try finalizing with verifier directly
-	log.Printf("[LINE] No E2EE key chain in LF1 response, attempting direct login")
+	logger.Info().Msg("No E2EE key chain in LF1 response, attempting direct login")
 	if res, err := c.LoginV2WithVerifier(verifier); err != nil {
 		return nil, fmt.Errorf("login finalization failed: %w", err)
 	} else {
