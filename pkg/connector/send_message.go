@@ -395,6 +395,51 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 				Msg("Prepared video message")
 		}
 
+	case event.MsgAudio:
+		data, err := lc.UserLogin.Bridge.Bot.DownloadMedia(ctx, msg.Content.URL, msg.Content.File)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download audio from matrix: %w", err)
+		}
+
+		contentType = int(ContentAudio)
+		contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(data))
+		contentMetadata["contentType"] = fmt.Sprintf("%d", ContentAudio)
+
+		if msg.Content.Info != nil && msg.Content.Info.Duration > 0 {
+			contentMetadata["DURATION"] = fmt.Sprintf("%d", msg.Content.Info.Duration)
+			contentMetadata["AUDLEN"] = fmt.Sprintf("%d", msg.Content.Info.Duration)
+		}
+
+		if plainText {
+			plainMediaData = data
+		} else {
+			if isGroup {
+				originalMediaData = data
+			}
+
+			uploadData, keyMaterialB64, err := lc.encryptFileData(data)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encrypt audio data: %w", err)
+			}
+
+			oid, err := client.UploadOBSWithSID(uploadData, "ema")
+			if err != nil {
+				return nil, fmt.Errorf("failed to upload audio to OBS: %w", err)
+			}
+
+			contentMetadata["OID"] = oid
+			contentMetadata["SID"] = "ema"
+			contentMetadata["ENC_KM"] = keyMaterialB64
+
+			audioPayload := map[string]string{"keyMaterial": keyMaterialB64}
+			payload, _ = json.Marshal(audioPayload)
+
+			lc.UserLogin.Bridge.Log.Info().
+				Str("oid", oid).
+				Int("upload_size", len(uploadData)).
+				Msg("Prepared audio message")
+		}
+
 	default:
 		return nil, fmt.Errorf("message type %s not implemented", msg.Content.MsgType)
 	}
@@ -518,6 +563,8 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		switch contentType {
 		case int(ContentVideo):
 			obsType = "video"
+		case int(ContentAudio):
+			obsType = "audio"
 		case int(ContentFile):
 			obsType = "file"
 		}
