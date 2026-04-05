@@ -60,11 +60,9 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 
 	// For plain media: we send the message first, then upload media to r/talk/m/{msgId}.
 	var plainMediaData []byte // raw media data to upload after sending
-	var plainThumbData []byte // raw thumbnail data to upload after sending
 
 	// For group chats, save original data in case E2EE encryption fails and we fall back to plain.
 	var originalMediaData []byte
-	var originalThumbData []byte
 
 	switch msg.Content.MsgType {
 	case event.MsgText:
@@ -101,11 +99,10 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			// Plain media: save data for post-send upload to r/talk/m/{msgId}
 			plainMediaData = data
 
-			thumbnailData, thumbWidth, thumbHeight, err := generateThumbnail(data)
+			_, thumbWidth, thumbHeight, err := generateThumbnail(data)
 			if err != nil {
-				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to generate thumbnail, continuing without it")
+				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to generate thumbnail dimensions, continuing without it")
 			} else {
-				plainThumbData = thumbnailData
 				mediaThumbInfo := map[string]interface{}{
 					"width":  thumbWidth,
 					"height": thumbHeight,
@@ -140,9 +137,6 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			// Save original data for potential group E2EE fallback
 			if isGroup {
 				originalMediaData = data
-				if thumbData, _, _, tErr := generateThumbnail(data); tErr == nil {
-					originalThumbData = thumbData
-				}
 			}
 
 			uploadData, keyMaterialB64, err := lc.encryptFileData(data)
@@ -288,18 +282,13 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			// Plain media: save data for post-send upload
 			plainMediaData = data
 
-			thumbnailData, thumbWidth, thumbHeight, err := extractVideoThumbnail(data)
+			_, thumbWidth, thumbHeight, err := extractVideoThumbnail(data)
 			if err != nil {
-				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to extract video thumbnail, using placeholder")
+				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to extract video thumbnail dimensions, using defaults")
 				thumbWidth = 384
 				thumbHeight = 384
-				placeholderImg := image.NewRGBA(image.Rect(0, 0, thumbWidth, thumbHeight))
-				var thumbBuf bytes.Buffer
-				jpeg.Encode(&thumbBuf, placeholderImg, &jpeg.Options{Quality: 30})
-				thumbnailData = thumbBuf.Bytes()
 			}
-			if len(thumbnailData) > 0 {
-				plainThumbData = thumbnailData
+			{
 				mediaThumbInfo := map[string]interface{}{
 					"width":  thumbWidth,
 					"height": thumbHeight,
@@ -316,9 +305,6 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		} else {
 			if isGroup {
 				originalMediaData = data
-				if thumbData, _, _, tErr := extractVideoThumbnail(data); tErr == nil {
-					originalThumbData = thumbData
-				}
 			}
 
 			uploadData, keyMaterialB64, err := lc.encryptVideoData(data)
@@ -478,7 +464,6 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 						delete(contentMetadata, "SID")
 						delete(contentMetadata, "ENC_KM")
 						plainMediaData = originalMediaData
-						plainThumbData = originalThumbData
 					}
 				}
 			}
@@ -583,12 +568,10 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			Int("media_size", len(plainMediaData)).
 			Msg("Uploaded plain media after sending")
 
-		if plainThumbData != nil {
-			previewID := fmt.Sprintf("%s__ud-preview", sentMsg.ID)
-			if err := client.UploadOBSPlain(plainThumbData, previewID, obsType); err != nil {
-				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload plain media thumbnail, continuing without it")
-			}
-		}
+		// Plain media: LINE generates previews server-side from uploaded data.
+		// The __ud-preview upload pattern only works on E2EE endpoints (/r/talk/emi/,
+		// /r/talk/emv/) where the server can't decrypt content to generate a preview.
+		// Thumbnail data is intentionally not uploaded here.
 	}
 
 	return &bridgev2.MatrixMessageResponse{
