@@ -33,7 +33,10 @@ func (c *Client) ListenSSE(localRev int64, callback func(event, data string)) er
 		req.Header.Set("Cookie", fmt.Sprintf("lct=%s", c.AccessToken))
 	}
 
-	resp, err := c.HTTPClient.Do(req)
+	// SSE is a long-lived connection — use a client with no timeout
+	// instead of c.HTTPClient which has a 30s timeout for normal API calls.
+	sseClient := &http.Client{}
+	resp, err := sseClient.Do(req)
 	if err != nil {
 		return err
 	}
