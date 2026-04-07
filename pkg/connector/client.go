@@ -28,15 +28,12 @@ type LineClient struct {
 	reqSeqMu    sync.Mutex
 	sentReqSeqs map[int]time.Time
 
-	noE2EEGroups map[string]time.Time // chatMid -> when group E2EE failure was cached
 	contactCache map[string]cachedContact
 }
 
 type peerKeyInfo struct {
-	raw       int
-	pub       string
-	noE2EE    bool      // true if peer has Letter Sealing off
-	checkedAt time.Time // when noE2EE was last verified
+	raw int
+	pub string
 }
 
 const contactCacheTTL = 1 * time.Hour
@@ -220,7 +217,7 @@ func (lc *LineClient) tryLogin(ctx context.Context) error {
 
 		lc.UserLogin.Bridge.Log.Info().Msg("Waiting for PIN verification on mobile device...")
 		waitClient := line.NewClient("")
-		waitRes, err := waitClient.WaitForLogin(res.Verifier, res.NoE2EE)
+		waitRes, err := waitClient.WaitForLogin(res.Verifier)
 		if err != nil {
 			return fmt.Errorf("PIN verification failed: %w", err)
 		}

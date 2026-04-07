@@ -60,13 +60,6 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 			// Ensure peer keys are available before attempting decryption
 			lc.ensurePeerKeyForMessage(context.Background(), msg)
 
-			// If we receive an encrypted group message, clear its noE2EE cache
-			// so future sends will attempt E2EE again.
-			if (ToType(msg.ToType) == ToRoom || ToType(msg.ToType) == ToGroup) && lc.isGroupNoE2EE(portalIDStr) {
-				lc.UserLogin.Bridge.Log.Info().Str("chat_mid", portalIDStr).Msg("Received encrypted group message, clearing noE2EE cache")
-				lc.clearGroupNoE2EE(portalIDStr)
-			}
-
 			if ToType(msg.ToType) == ToRoom || ToType(msg.ToType) == ToGroup {
 				// Group Decryption
 				if len(msg.Chunks) >= 5 {
@@ -160,31 +153,15 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 			client := line.NewClient(lc.AccessToken)
 			if ContentType(data.ContentType) == ContentImage {
 				oid := data.ContentMetadata["OID"]
-				isPlainMedia := oid == ""
-
-				// For plain media, the image is stored at r/talk/m/{messageID}
-				if isPlainMedia {
-					oid = data.ID
-				}
 
 				if oid != "" {
-					var imgData []byte
-					var err error
-					if isPlainMedia {
-						imgData, err = client.DownloadOBSWithSID(oid, data.ID, "m")
-					} else {
-						imgData, err = client.DownloadOBS(oid, data.ID)
-					}
+					imgData, err := client.DownloadOBS(oid, data.ID)
 
 					// Refresh token if we get a 401
 					if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
 						if errRecover := lc.recoverToken(ctx); errRecover == nil {
 							client = line.NewClient(lc.AccessToken)
-							if isPlainMedia {
-								imgData, err = client.DownloadOBSWithSID(oid, data.ID, "m")
-							} else {
-								imgData, err = client.DownloadOBS(oid, data.ID)
-							}
+							imgData, err = client.DownloadOBS(oid, data.ID)
 						} else {
 							lc.UserLogin.Bridge.Log.Warn().Err(errRecover).Msg("Failed to recover token for OBS download")
 						}
@@ -195,7 +172,6 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 							Err(err).
 							Str("oid", oid).
 							Str("msg_id", data.ID).
-							Bool("plain_media", isPlainMedia).
 							Msg("Failed to download image from OBS, sending placeholder")
 						return &bridgev2.ConvertedMessage{
 							Parts: []*bridgev2.ConvertedMessagePart{
@@ -258,7 +234,6 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 
 			if ContentType(data.ContentType) == ContentVideo {
 				oid := data.ContentMetadata["OID"]
-				isPlainMedia := oid == ""
 
 				if oid == "" && decryptedBody != "" && strings.Contains(decryptedBody, "OID") {
 					var decryptInfo struct {
@@ -268,26 +243,16 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 					}
 					if err := json.Unmarshal([]byte(decryptedBody), &decryptInfo); err == nil && decryptInfo.OID != "" {
 						oid = decryptInfo.OID
-						isPlainMedia = false
 					}
-				}
-
-				// For plain media, the video is stored at r/talk/m/{messageID}
-				if isPlainMedia {
-					oid = data.ID
 				}
 
 				if oid != "" {
-					sid := "emv"
-					if isPlainMedia {
-						sid = "m"
-					}
-					videoData, err := client.DownloadOBSWithSID(oid, data.ID, sid)
+					videoData, err := client.DownloadOBSWithSID(oid, data.ID, "emv")
 
 					if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
 						if errRecover := lc.recoverToken(ctx); errRecover == nil {
 							client = line.NewClient(lc.AccessToken)
-							videoData, err = client.DownloadOBSWithSID(oid, data.ID, sid)
+							videoData, err = client.DownloadOBSWithSID(oid, data.ID, "emv")
 						} else {
 							lc.UserLogin.Bridge.Log.Warn().Err(errRecover).Msg("Failed to recover token for OBS download")
 						}
@@ -298,7 +263,6 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 							Err(err).
 							Str("oid", oid).
 							Str("msg_id", data.ID).
-							Bool("plain_media", isPlainMedia).
 							Msg("Failed to download video from OBS, sending placeholder")
 						return &bridgev2.ConvertedMessage{
 							Parts: []*bridgev2.ConvertedMessagePart{
@@ -428,28 +392,17 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 			// Handle File type
 			if ContentType(data.ContentType) == ContentFile {
 				oid := data.ContentMetadata["OID"]
-				isPlainMedia := oid == ""
 
 				if oid == "" && decryptedBody != "" && strings.Contains(decryptedBody, "fileName") {
 					lc.UserLogin.Bridge.Log.Debug().Msg("File message with encrypted payload, OID in metadata")
 				}
 
-				// For plain media, the file is stored at r/talk/m/{messageID}
-				if isPlainMedia {
-					oid = data.ID
-				}
-
 				if oid != "" {
-					sid := "emf"
-					if isPlainMedia {
-						sid = "m"
-					}
-					fileData, err := client.DownloadOBSWithSID(oid, data.ID, sid)
+					fileData, err := client.DownloadOBSWithSID(oid, data.ID, "emf")
 					if err != nil {
 						lc.UserLogin.Bridge.Log.Warn().
 							Err(err).
 							Str("oid", oid).
-							Bool("plain_media", isPlainMedia).
 							Msg("Failed to download file from OBS, sending placeholder")
 						return &bridgev2.ConvertedMessage{
 							Parts: []*bridgev2.ConvertedMessagePart{
@@ -559,24 +512,14 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 			// Handle Audio
 			if ContentType(data.ContentType) == ContentAudio {
 				oid := data.ContentMetadata["OID"]
-				isPlainMedia := oid == ""
-
-				// For plain media, the audio is stored at r/talk/m/{messageID}
-				if isPlainMedia {
-					oid = data.ID
-				}
 
 				if oid != "" {
-					sid := "ema"
-					if isPlainMedia {
-						sid = "m"
-					}
-					audioData, err := client.DownloadOBSWithSID(oid, data.ID, sid)
+					audioData, err := client.DownloadOBSWithSID(oid, data.ID, "ema")
 
 					if err != nil && (strings.Contains(err.Error(), "401") || lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
 						if errRecover := lc.recoverToken(ctx); errRecover == nil {
 							client = line.NewClient(lc.AccessToken)
-							audioData, err = client.DownloadOBSWithSID(oid, data.ID, sid)
+							audioData, err = client.DownloadOBSWithSID(oid, data.ID, "ema")
 						}
 					}
 
@@ -585,7 +528,6 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 							Err(err).
 							Str("oid", oid).
 							Str("msg_id", data.ID).
-							Bool("plain_media", isPlainMedia).
 							Msg("Failed to download audio from OBS, sending placeholder")
 						return &bridgev2.ConvertedMessage{
 							Parts: []*bridgev2.ConvertedMessagePart{

@@ -27,55 +27,24 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 	lowerPortalID := strings.ToLower(portalMid)
 	isGroup := strings.HasPrefix(lowerPortalID, "c") || strings.HasPrefix(lowerPortalID, "r")
 
-	// Determine whether we need to send as plain text (peer/group has Letter Sealing off).
-	plainText := false
 	if lc.E2EE == nil {
-		plainText = true
-		lc.UserLogin.Bridge.Log.Warn().Msg("E2EE not initialized, sending as plain text")
-	} else if isGroup {
-		if lc.isGroupNoE2EE(portalMid) {
-			plainText = true
-		}
-	} else {
-		// 1:1 — probe peer key to determine E2EE support
-		_, _, errPeer := lc.ensurePeerKey(ctx, portalMid)
-		if errPeer != nil && line.IsNoUsableE2EEPublicKey(errPeer) {
-			plainText = true
-		} else if errPeer != nil {
-			return nil, fmt.Errorf("failed to get peer key: %w", errPeer)
-		}
+		return nil, fmt.Errorf("E2EE not initialized; cannot send")
 	}
 
 	var chunks []string
 	var err error
 	contentType := int(ContentText)
-	contentMetadata := map[string]string{}
-	if !plainText {
-		contentMetadata["e2eeVersion"] = "2"
+	contentMetadata := map[string]string{
+		"e2eeVersion": "2",
 	}
-
-	// For plain text, we set lineMsg.Text directly; payload is used only for E2EE.
 	var payload []byte
-	var plainTextBody string // used when plainText == true for text messages
-
-	// For plain media: we send the message first, then upload media to r/talk/m/{msgId}.
-	var plainMediaData []byte // raw media data to upload after sending
-	var plainThumbData []byte // raw thumbnail data to upload after sending
-
-	// For group chats, save original data in case E2EE encryption fails and we fall back to plain.
-	var originalMediaData []byte
-	var originalThumbData []byte
 
 	switch msg.Content.MsgType {
 	case event.MsgText:
 		contentType = int(ContentText)
-		if plainText {
-			plainTextBody = msg.Content.Body
-		} else {
-			payload, err = json.Marshal(map[string]string{"text": msg.Content.Body})
-			if err != nil {
-				return nil, fmt.Errorf("failed to marshal text payload: %w", err)
-			}
+		payload, err = json.Marshal(map[string]string{"text": msg.Content.Body})
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal text payload: %w", err)
 		}
 
 	case event.MsgImage:
@@ -97,54 +66,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 
 		contentType = int(ContentImage)
 
-		if plainText {
-			// Plain media: save data for post-send upload to r/talk/m/{msgId}
-			plainMediaData = data
-
-			thumbnailData, thumbWidth, thumbHeight, err := generateThumbnail(data)
-			if err != nil {
-				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to generate thumbnail, continuing without it")
-			} else {
-				plainThumbData = thumbnailData
-				mediaThumbInfo := map[string]interface{}{
-					"width":  thumbWidth,
-					"height": thumbHeight,
-				}
-				if thumbInfoJSON, err := json.Marshal(mediaThumbInfo); err == nil {
-					contentMetadata["MEDIA_THUMB_INFO"] = string(thumbInfoJSON)
-				}
-			}
-
-			contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(data))
-			contentMetadata["contentType"] = fmt.Sprintf("%d", ContentImage)
-
-			fileName := msg.Content.GetFileName()
-			if fileName == "" {
-				fileName = "image." + extension
-			}
-			contentMetadata["FILE_NAME"] = fileName
-
-			mediaContentInfo := map[string]interface{}{
-				"category":  "original",
-				"fileSize":  len(data),
-				"extension": extension,
-			}
-			if isAnimated {
-				mediaContentInfo["animated"] = true
-			}
-			if mediaInfoJSON, err := json.Marshal(mediaContentInfo); err == nil {
-				contentMetadata["MEDIA_CONTENT_INFO"] = string(mediaInfoJSON)
-			}
-		} else {
-			// E2EE: encrypt, upload to OBS first, send with OID
-			// Save original data for potential group E2EE fallback
-			if isGroup {
-				originalMediaData = data
-				if thumbData, _, _, tErr := generateThumbnail(data); tErr == nil {
-					originalThumbData = thumbData
-				}
-			}
-
+		{
 			uploadData, keyMaterialB64, err := lc.encryptFileData(data)
 			if err != nil {
 				return nil, fmt.Errorf("failed to encrypt image data: %w", err)
@@ -226,49 +148,33 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(data))
 		contentMetadata["contentType"] = fmt.Sprintf("%d", ContentFile)
 
-		if plainText {
-			// Plain media: save data for post-send upload
-			plainMediaData = data
-
-			lc.UserLogin.Bridge.Log.Info().
-				Str("file_name", fileName).
-				Bool("plain_text", plainText).
-				Int("original_size", len(data)).
-				Msg("Prepared plain file message")
-		} else {
-			if isGroup {
-				originalMediaData = data
-			}
-
-			uploadData, keyMaterialB64, err := lc.encryptFileData(data)
-			if err != nil {
-				return nil, fmt.Errorf("failed to encrypt file data: %w", err)
-			}
-
-			oid, err := client.UploadOBSWithSID(uploadData, "emf")
-			if err != nil {
-				return nil, fmt.Errorf("failed to upload file to OBS: %w", err)
-			}
-
-			contentMetadata["OID"] = oid
-			contentMetadata["SID"] = "emf"
-			contentMetadata["ENC_KM"] = keyMaterialB64
-
-			filePayload := map[string]string{
-				"keyMaterial": keyMaterialB64,
-				"fileName":    fileName,
-			}
-			payloadBytes, _ := json.Marshal(filePayload)
-			payload = payloadBytes
-
-			lc.UserLogin.Bridge.Log.Info().
-				Str("oid", oid).
-				Str("file_name", fileName).
-				Bool("plain_text", plainText).
-				Int("upload_size", len(uploadData)).
-				Int("original_size", len(data)).
-				Msg("Prepared file message")
+		uploadData, keyMaterialB64, err := lc.encryptFileData(data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt file data: %w", err)
 		}
+
+		oid, err := client.UploadOBSWithSID(uploadData, "emf")
+		if err != nil {
+			return nil, fmt.Errorf("failed to upload file to OBS: %w", err)
+		}
+
+		contentMetadata["OID"] = oid
+		contentMetadata["SID"] = "emf"
+		contentMetadata["ENC_KM"] = keyMaterialB64
+
+		filePayload := map[string]string{
+			"keyMaterial": keyMaterialB64,
+			"fileName":    fileName,
+		}
+		payloadBytes, _ := json.Marshal(filePayload)
+		payload = payloadBytes
+
+		lc.UserLogin.Bridge.Log.Info().
+			Str("oid", oid).
+			Str("file_name", fileName).
+			Int("upload_size", len(uploadData)).
+			Int("original_size", len(data)).
+			Msg("Prepared file message")
 
 	case event.MsgVideo:
 		data, err := lc.UserLogin.Bridge.Bot.DownloadMedia(ctx, msg.Content.URL, msg.Content.File)
@@ -284,43 +190,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			contentMetadata["DURATION"] = fmt.Sprintf("%d", msg.Content.Info.Duration)
 		}
 
-		if plainText {
-			// Plain media: save data for post-send upload
-			plainMediaData = data
-
-			thumbnailData, thumbWidth, thumbHeight, err := extractVideoThumbnail(data)
-			if err != nil {
-				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to extract video thumbnail, using placeholder")
-				thumbWidth = 384
-				thumbHeight = 384
-				placeholderImg := image.NewRGBA(image.Rect(0, 0, thumbWidth, thumbHeight))
-				var thumbBuf bytes.Buffer
-				jpeg.Encode(&thumbBuf, placeholderImg, &jpeg.Options{Quality: 30})
-				thumbnailData = thumbBuf.Bytes()
-			}
-			if len(thumbnailData) > 0 {
-				plainThumbData = thumbnailData
-				mediaThumbInfo := map[string]interface{}{
-					"width":  thumbWidth,
-					"height": thumbHeight,
-				}
-				if thumbInfoJSON, err := json.Marshal(mediaThumbInfo); err == nil {
-					contentMetadata["MEDIA_THUMB_INFO"] = string(thumbInfoJSON)
-				}
-			}
-
-			lc.UserLogin.Bridge.Log.Info().
-				Bool("plain_text", plainText).
-				Int("original_size", len(data)).
-				Msg("Prepared plain video message")
-		} else {
-			if isGroup {
-				originalMediaData = data
-				if thumbData, _, _, tErr := extractVideoThumbnail(data); tErr == nil {
-					originalThumbData = thumbData
-				}
-			}
-
+		{
 			uploadData, keyMaterialB64, err := lc.encryptVideoData(data)
 			if err != nil {
 				return nil, fmt.Errorf("failed to encrypt video data: %w", err)
@@ -390,7 +260,6 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 
 			lc.UserLogin.Bridge.Log.Info().
 				Str("oid", oid).
-				Bool("plain_text", plainText).
 				Int("upload_size", len(uploadData)).
 				Msg("Prepared video message")
 		}
@@ -410,99 +279,67 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			contentMetadata["AUDLEN"] = fmt.Sprintf("%d", msg.Content.Info.Duration)
 		}
 
-		if plainText {
-			plainMediaData = data
-		} else {
-			if isGroup {
-				originalMediaData = data
-			}
-
-			uploadData, keyMaterialB64, err := lc.encryptFileData(data)
-			if err != nil {
-				return nil, fmt.Errorf("failed to encrypt audio data: %w", err)
-			}
-
-			oid, err := client.UploadOBSWithSID(uploadData, "ema")
-			if err != nil {
-				return nil, fmt.Errorf("failed to upload audio to OBS: %w", err)
-			}
-
-			contentMetadata["OID"] = oid
-			contentMetadata["SID"] = "ema"
-			contentMetadata["ENC_KM"] = keyMaterialB64
-
-			audioPayload := map[string]string{"keyMaterial": keyMaterialB64}
-			payload, _ = json.Marshal(audioPayload)
-
-			lc.UserLogin.Bridge.Log.Info().
-				Str("oid", oid).
-				Int("upload_size", len(uploadData)).
-				Msg("Prepared audio message")
+		uploadData, keyMaterialB64, err := lc.encryptFileData(data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt audio data: %w", err)
 		}
+
+		oid, err := client.UploadOBSWithSID(uploadData, "ema")
+		if err != nil {
+			return nil, fmt.Errorf("failed to upload audio to OBS: %w", err)
+		}
+
+		contentMetadata["OID"] = oid
+		contentMetadata["SID"] = "ema"
+		contentMetadata["ENC_KM"] = keyMaterialB64
+
+		audioPayload := map[string]string{"keyMaterial": keyMaterialB64}
+		payload, _ = json.Marshal(audioPayload)
+
+		lc.UserLogin.Bridge.Log.Info().
+			Str("oid", oid).
+			Int("upload_size", len(uploadData)).
+			Msg("Prepared audio message")
 
 	default:
 		return nil, fmt.Errorf("message type %s not implemented", msg.Content.MsgType)
 	}
 
-	// Encryption phase — skip entirely for plain text
-	if !plainText {
-		if isGroup {
-			if errFetch := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); errFetch != nil {
-				lc.UserLogin.Bridge.Log.Debug().Err(errFetch).Str("chat_mid", portalMid).Msg("fetchAndUnwrapGroupKey before encrypt failed")
-			}
-			if contentType != int(ContentText) {
-				chunks, err = lc.E2EE.EncryptGroupMessageRaw(portalMid, fromMid, contentType, payload)
-			} else {
-				chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
-			}
-			if err != nil {
-				if errFetch := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); errFetch == nil {
-					if contentType != int(ContentText) {
-						chunks, err = lc.E2EE.EncryptGroupMessageRaw(portalMid, fromMid, contentType, payload)
-					} else {
-						chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
-					}
-				} else if line.IsNoUsableE2EEGroupKey(errFetch) || line.IsNoUsableE2EEGroupKey(err) {
-					// Group has no E2EE keys — fall back to plain text
-					lc.markGroupNoE2EE(portalMid)
-					lc.UserLogin.Bridge.Log.Info().Str("chat_mid", portalMid).Msg("Group has no E2EE keys, falling back to plain text")
-					plainText = true
-					chunks = nil
-					err = nil
-					delete(contentMetadata, "e2eeVersion")
-					if contentType == int(ContentText) {
-						plainTextBody = msg.Content.Body
-					} else {
-						// Media was uploaded to E2EE endpoint — need to re-upload via plain after sending
-						delete(contentMetadata, "OID")
-						delete(contentMetadata, "SID")
-						delete(contentMetadata, "ENC_KM")
-						plainMediaData = originalMediaData
-						plainThumbData = originalThumbData
-					}
+	// Encryption phase
+	if isGroup {
+		if errFetch := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); errFetch != nil {
+			lc.UserLogin.Bridge.Log.Debug().Err(errFetch).Str("chat_mid", portalMid).Msg("fetchAndUnwrapGroupKey before encrypt failed")
+		}
+		if contentType != int(ContentText) {
+			chunks, err = lc.E2EE.EncryptGroupMessageRaw(portalMid, fromMid, contentType, payload)
+		} else {
+			chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
+		}
+		if err != nil {
+			if errFetch := lc.fetchAndUnwrapGroupKey(ctx, portalMid, 0); errFetch == nil {
+				if contentType != int(ContentText) {
+					chunks, err = lc.E2EE.EncryptGroupMessageRaw(portalMid, fromMid, contentType, payload)
+				} else {
+					chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
 				}
 			}
-		} else {
-			// 1-1 Encryption (peer key already fetched above)
-			myRaw, myKeyID, errKey := lc.E2EE.MyKeyIDs()
-			if errKey != nil {
-				return nil, fmt.Errorf("missing own E2EE key: %w", errKey)
-			}
-			peerRaw, peerPub, errPeer := lc.ensurePeerKey(ctx, portalMid)
-			if errPeer != nil {
-				return nil, fmt.Errorf("failed to get peer key: %w", errPeer)
-			}
-
-			chunks, err = lc.E2EE.EncryptMessageV2Raw(portalMid, fromMid, myKeyID, peerPub, myRaw, peerRaw, contentType, payload)
+		}
+	} else {
+		// 1-1 Encryption
+		myRaw, myKeyID, errKey := lc.E2EE.MyKeyIDs()
+		if errKey != nil {
+			return nil, fmt.Errorf("missing own E2EE key: %w", errKey)
+		}
+		peerRaw, peerPub, errPeer := lc.ensurePeerKey(ctx, portalMid)
+		if errPeer != nil {
+			return nil, fmt.Errorf("failed to get peer key: %w", errPeer)
 		}
 
-		if err != nil {
-			return nil, fmt.Errorf("encrypt failed: %w", err)
-		}
+		chunks, err = lc.E2EE.EncryptMessageV2Raw(portalMid, fromMid, myKeyID, peerPub, myRaw, peerRaw, contentType, payload)
 	}
 
-	if plainText {
-		lc.UserLogin.Bridge.Log.Info().Str("portal", portalMid).Int("content_type", contentType).Msg("Sending plain text message (no E2EE)")
+	if err != nil {
+		return nil, fmt.Errorf("encrypt failed: %w", err)
 	}
 
 	now := time.Now().UnixMilli()
@@ -518,11 +355,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		ContentMetadata: contentMetadata,
 	}
 
-	if plainText {
-		lineMsg.Text = plainTextBody
-	} else {
-		lineMsg.Chunks = chunks
-	}
+	lineMsg.Chunks = chunks
 
 	var relatedMsg *database.Message
 
@@ -555,35 +388,6 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 	sentMsg, err := client.SendMessage(int64(reqSeq), lineMsg)
 	if err != nil {
 		return nil, err
-	}
-
-	// For plain media: upload media to r/talk/m/{serverMessageId} after sending
-	if plainText && plainMediaData != nil && sentMsg.ID != "" {
-		obsType := "image"
-		switch contentType {
-		case int(ContentVideo):
-			obsType = "video"
-		case int(ContentAudio):
-			obsType = "audio"
-		case int(ContentFile):
-			obsType = "file"
-		}
-
-		if err := client.UploadOBSPlain(plainMediaData, sentMsg.ID, obsType); err != nil {
-			return nil, fmt.Errorf("failed to upload plain media to OBS: %w", err)
-		}
-		lc.UserLogin.Bridge.Log.Info().
-			Str("message_id", sentMsg.ID).
-			Str("obs_type", obsType).
-			Int("media_size", len(plainMediaData)).
-			Msg("Uploaded plain media after sending")
-
-		if plainThumbData != nil {
-			previewID := fmt.Sprintf("%s__ud-preview", sentMsg.ID)
-			if err := client.UploadOBSPlain(plainThumbData, previewID, obsType); err != nil {
-				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload plain media thumbnail, continuing without it")
-			}
-		}
 	}
 
 	return &bridgev2.MatrixMessageResponse{

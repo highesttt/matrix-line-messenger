@@ -33,8 +33,6 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
 ## Features
 
-ℹ️ Works with both [Letter Sealing](readme/LETTER_SEALING.md) `ON` and `OFF` accounts.
-
 - [x] Messages (Text, Images, Videos, Files, and Audio/Voice notes)
 - [x] Read receipts
 - [x] Reaction support (Receive ONLY)
@@ -289,10 +287,6 @@ cd data
 
 ## Can't log in?
 
-There are two common reasons login can fail:
-
-### 1. No email is set on your LINE account
-
 This bridge uses the email from your account information. If your
 account is older, you signed in using a phone number, or you signed in
 with Google, you may not have an email set for your LINE account.
@@ -303,11 +297,6 @@ with Google, you may not have an email set for your LINE account.
 2. Go to `Settings` > `Account`.
 3. Tap on `Email address` and set your email address.
 
-### 2. Letter Sealing (End-to-End Encryption)
+## Letter Sealing (End-to-End Encryption)
 
-The bridge supports both `Letter Sealing` ON and OFF accounts. Messages
-to peers or groups without `Letter Sealing` are sent as plain text
-automatically.
-
-For details on how the bridge handles different Letter Sealing
-combinations, see [readme/LETTER_SEALING.md](readme/LETTER_SEALING.md).
+As of April 1st, 2026, [all LINE accounts have E2EE enabled](https://notice.line.me/line/ios/document/notice). All messages sent and received by this bridge are end-to-end encrypted via Letter Sealing. For how the bridge handled accounts without E2EE prior to this change, see [PR #17](https://github.com/clins1994/matrix-line-messenger/pull/17).
