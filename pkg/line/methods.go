@@ -345,6 +345,26 @@ func (c *Client) SendChatChecked(chatMid, messageID string) error {
 	return err
 }
 
+// GetAllContactIds returns the MIDs of all friends/contacts on the user's LINE account.
+func (c *Client) GetAllContactIds() ([]string, error) {
+	resp, err := c.callRPC("TalkService", "getAllContactIds")
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int      `json:"code"`
+		Message string   `json:"message"`
+		Data    []string `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("getAllContactIds failed: %s", wrapper.Message)
+	}
+	return wrapper.Data, nil
+}
+
 // GetContactsV2 fetches contact details for a list of MIDs.
 func (c *Client) GetContactsV2(mids []string) (*ContactsResponse, error) {
 	req := GetContactsV2Request{TargetUserMids: mids}

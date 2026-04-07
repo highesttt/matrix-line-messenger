@@ -237,26 +237,13 @@ func (lc *LineClient) getContact(ctx context.Context, mid string) line.Contact {
 
 func (lc *LineClient) GetContactList(ctx context.Context) ([]*bridgev2.ResolveIdentifierResponse, error) {
 	client := line.NewClient(lc.AccessToken)
-	opts := line.MessageBoxesOptions{
-		ActiveOnly:                     true,
-		MessageBoxCountLimit:           100,
-		WithUnreadCount:                false,
-		LastMessagesPerMessageBoxCount: 0,
-	}
-
-	res, err := client.GetMessageBoxes(opts)
+	mids, err := client.GetAllContactIds()
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch message boxes: %w", err)
+		return nil, fmt.Errorf("failed to fetch contact IDs: %w", err)
 	}
 
 	var contacts []*bridgev2.ResolveIdentifierResponse
-	for _, box := range res.MessageBoxes {
-		mid := box.ID
-		lowerMid := strings.ToLower(mid)
-		// Skip group chats and self
-		if strings.HasPrefix(lowerMid, "c") || strings.HasPrefix(lowerMid, "r") {
-			continue
-		}
+	for _, mid := range mids {
 		if mid == lc.Mid || mid == string(lc.UserLogin.ID) {
 			continue
 		}
