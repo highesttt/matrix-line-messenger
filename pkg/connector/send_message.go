@@ -292,29 +292,30 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 
 			contentType = int(ContentImage)
 
-			if isGroup {
-				originalMediaData = data
+			fileName := msg.Content.GetFileName()
+			if fileName == "" {
+				fileName = "image.gif"
+			}
+			contentMetadata["FILE_NAME"] = fileName
+			contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(data))
+			contentMetadata["contentType"] = fmt.Sprintf("%d", ContentImage)
+
+			mediaContentInfo := map[string]interface{}{
+				"category":  "original",
+				"fileSize":  len(data),
+				"extension": "gif",
+				"animated":  true,
+			}
+			if mediaInfoJSON, err := json.Marshal(mediaContentInfo); err == nil {
+				contentMetadata["MEDIA_CONTENT_INFO"] = string(mediaInfoJSON)
 			}
 
-			uploadData, keyMaterialB64, err := lc.encryptFileData(data)
-			if err != nil {
-				return nil, fmt.Errorf("failed to encrypt GIF data: %w", err)
-			}
+			if plainText {
+				plainMediaData = data
 
-			oid, err := client.UploadOBS(uploadData)
-			if err != nil {
-				return nil, fmt.Errorf("failed to upload GIF to OBS: %w", err)
-			}
-
-			thumbnailData, thumbWidth, thumbHeight, err := generateThumbnail(data)
-			if err != nil {
-				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to generate GIF thumbnail, continuing without it")
-			} else if thumbToUpload, err := encryptThumbnail(thumbnailData, keyMaterialB64); err != nil {
-				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to encrypt GIF thumbnail, continuing without it")
-			} else {
-				previewOID := fmt.Sprintf("%s__ud-preview", oid)
-				if err := client.UploadOBSWithOID(thumbToUpload, previewOID); err != nil {
-					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload GIF preview, continuing without it")
+				_, thumbWidth, thumbHeight, err := generateThumbnail(data)
+				if err != nil {
+					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to generate GIF thumbnail dimensions, continuing without it")
 				} else {
 					mediaThumbInfo := map[string]interface{}{
 						"width":  thumbWidth,
@@ -324,32 +325,48 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 						contentMetadata["MEDIA_THUMB_INFO"] = string(thumbInfoJSON)
 					}
 				}
-			}
+			} else {
+				if isGroup {
+					originalMediaData = data
+				}
 
-			contentMetadata["OID"] = oid
-			contentMetadata["SID"] = "emi"
-			contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(uploadData))
-			contentMetadata["contentType"] = fmt.Sprintf("%d", ContentImage)
-			contentMetadata["ENC_KM"] = keyMaterialB64
+				uploadData, keyMaterialB64, err := lc.encryptFileData(data)
+				if err != nil {
+					return nil, fmt.Errorf("failed to encrypt GIF data: %w", err)
+				}
 
-			fileName := msg.Content.GetFileName()
-			if fileName == "" {
-				fileName = "image.gif"
-			}
-			contentMetadata["FILE_NAME"] = fileName
+				oid, err := client.UploadOBS(uploadData)
+				if err != nil {
+					return nil, fmt.Errorf("failed to upload GIF to OBS: %w", err)
+				}
 
-			mediaContentInfo := map[string]interface{}{
-				"category":  "original",
-				"fileSize":  len(uploadData),
-				"extension": "gif",
-				"animated":  true,
-			}
-			if mediaInfoJSON, err := json.Marshal(mediaContentInfo); err == nil {
-				contentMetadata["MEDIA_CONTENT_INFO"] = string(mediaInfoJSON)
-			}
+				thumbnailData, thumbWidth, thumbHeight, err := generateThumbnail(data)
+				if err != nil {
+					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to generate GIF thumbnail, continuing without it")
+				} else if thumbToUpload, err := encryptThumbnail(thumbnailData, keyMaterialB64); err != nil {
+					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to encrypt GIF thumbnail, continuing without it")
+				} else {
+					previewOID := fmt.Sprintf("%s__ud-preview", oid)
+					if err := client.UploadOBSWithOID(thumbToUpload, previewOID); err != nil {
+						lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload GIF preview, continuing without it")
+					} else {
+						mediaThumbInfo := map[string]interface{}{
+							"width":  thumbWidth,
+							"height": thumbHeight,
+						}
+						if thumbInfoJSON, err := json.Marshal(mediaThumbInfo); err == nil {
+							contentMetadata["MEDIA_THUMB_INFO"] = string(thumbInfoJSON)
+						}
+					}
+				}
 
-			imgPayload := map[string]string{"keyMaterial": keyMaterialB64}
-			payload, _ = json.Marshal(imgPayload)
+				contentMetadata["OID"] = oid
+				contentMetadata["SID"] = "emi"
+				contentMetadata["ENC_KM"] = keyMaterialB64
+
+				imgPayload := map[string]string{"keyMaterial": keyMaterialB64}
+				payload, _ = json.Marshal(imgPayload)
+			}
 			break
 		}
 
@@ -646,7 +663,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			obsType = "file"
 		}
 
-		if err := client.UploadOBSPlain(plainMediaData, sentMsg.ID, obsType); err != nil {
+		if err := client.UploadOBSPlain(plainMediaData, sentMsg.ID, obsType, contentMetadata["FILE_NAME"]); err != nil {
 			return nil, fmt.Errorf("failed to upload plain media to OBS: %w", err)
 		}
 		lc.UserLogin.Bridge.Log.Info().
@@ -657,7 +674,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 
 		if plainThumbData != nil {
 			previewID := fmt.Sprintf("%s__ud-preview", sentMsg.ID)
-			if err := client.UploadOBSPlain(plainThumbData, previewID, obsType); err != nil {
+			if err := client.UploadOBSPlain(plainThumbData, previewID, obsType, ""); err != nil {
 				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload plain media thumbnail, continuing without it")
 			}
 		}
