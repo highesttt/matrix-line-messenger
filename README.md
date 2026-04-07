@@ -33,8 +33,6 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
 ## Features
 
-ℹ️ Works with both [Letter Sealing](readme/LETTER_SEALING.md) `ON` and `OFF` accounts.
-
 - [x] Messages (Text, Images, Videos, Files, and Audio/Voice notes)
 - [x] Read receipts
 - [x] Reaction support (Receive ONLY)
@@ -287,11 +285,14 @@ cd data
    For Beeper, use `@sh-linebot:beeper.local`.
 2. Send the command `login` and follow the instructions.
 
+## Letter Sealing (E2EE)
+
+As of April 1, 2025, LINE has made [Letter Sealing mandatory for all
+accounts](https://notice.line.me/line/ios/document/notice). The toggle
+no longer appears in user settings. All messages are end-to-end
+encrypted and the bridge handles E2EE automatically.
+
 ## Can't log in?
-
-There are two common reasons login can fail:
-
-### 1. No email is set on your LINE account
 
 This bridge uses the email from your account information. If your
 account is older, you signed in using a phone number, or you signed in
@@ -302,12 +303,3 @@ with Google, you may not have an email set for your LINE account.
 1. Open the LINE app on your mobile device.
 2. Go to `Settings` > `Account`.
 3. Tap on `Email address` and set your email address.
-
-### 2. Letter Sealing (End-to-End Encryption)
-
-The bridge supports both `Letter Sealing` ON and OFF accounts. Messages
-to peers or groups without `Letter Sealing` are sent as plain text
-automatically.
-
-For details on how the bridge handles different Letter Sealing
-combinations, see [readme/LETTER_SEALING.md](readme/LETTER_SEALING.md).
