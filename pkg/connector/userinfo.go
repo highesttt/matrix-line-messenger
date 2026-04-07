@@ -235,6 +235,49 @@ func (lc *LineClient) getContact(ctx context.Context, mid string) line.Contact {
 	return line.Contact{Mid: mid, DisplayName: mid}
 }
 
+func (lc *LineClient) GetContactList(ctx context.Context) ([]*bridgev2.ResolveIdentifierResponse, error) {
+	client := line.NewClient(lc.AccessToken)
+	opts := line.MessageBoxesOptions{
+		ActiveOnly:                     true,
+		MessageBoxCountLimit:           100,
+		WithUnreadCount:                false,
+		LastMessagesPerMessageBoxCount: 0,
+	}
+
+	res, err := client.GetMessageBoxes(opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch message boxes: %w", err)
+	}
+
+	var contacts []*bridgev2.ResolveIdentifierResponse
+	for _, box := range res.MessageBoxes {
+		mid := box.ID
+		lowerMid := strings.ToLower(mid)
+		// Skip group chats and self
+		if strings.HasPrefix(lowerMid, "c") || strings.HasPrefix(lowerMid, "r") {
+			continue
+		}
+		if mid == lc.Mid || mid == string(lc.UserLogin.ID) {
+			continue
+		}
+
+		userID := makeUserID(mid)
+		ghost, err := lc.UserLogin.Bridge.GetGhostByID(ctx, userID)
+		if err != nil {
+			continue
+		}
+		ghostInfo, _ := lc.GetUserInfo(ctx, ghost)
+
+		contacts = append(contacts, &bridgev2.ResolveIdentifierResponse{
+			Ghost:    ghost,
+			UserID:   userID,
+			UserInfo: ghostInfo,
+		})
+	}
+
+	return contacts, nil
+}
+
 func (lc *LineClient) ResolveIdentifier(ctx context.Context, identifier string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
 	userID := makeUserID(strings.TrimSpace(identifier))
 	portalID := networkid.PortalKey{ID: makePortalID(string(userID)), Receiver: lc.UserLogin.ID}
