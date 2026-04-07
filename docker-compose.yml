@@ -5,6 +5,10 @@ services:
         build:
             context: .
             dockerfile: Dockerfile
+            args:
+                COMMIT: "${COMMIT:-unknown}"
+                BUILD_TIME: "${BUILD_TIME:-unknown}"
+                MAUTRIX_VERSION: "${MAUTRIX_VERSION:-unknown}"
         volumes:
             - ./data:/data
         restart: unless-stopped

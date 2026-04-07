@@ -15,11 +15,16 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
+ARG COMMIT=unknown
+ARG BUILD_TIME=unknown
+ARG MAUTRIX_VERSION=unknown
+
 COPY cmd ./cmd
 COPY pkg ./pkg
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go build -o matrix-line ./cmd/matrix-line
+    go build -ldflags "-s -w -X main.Commit=$COMMIT -X 'main.BuildTime=$BUILD_TIME' -X 'maunium.net/go/mautrix.GoModVersion=$MAUTRIX_VERSION'" \
+    -o matrix-line ./cmd/matrix-line
 
 FROM ${DOCKER_HUB}/alpine:3.23
 
