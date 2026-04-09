@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -86,17 +87,19 @@ type UserLoginMetadata struct {
 	E2EEPublicKey     string            `json:"e2ee_public_key,omitempty"`
 	E2EEVersion       string            `json:"e2ee_version,omitempty"`
 	E2EEKeyID         string            `json:"e2ee_key_id,omitempty"`
-	ExportedKeyMap    map[string]string `json:"exported_key_map,omitempty"`
+	ExportedKeyMap          map[string]string `json:"exported_key_map,omitempty"`
+	DurationUntilRefreshSec int64             `json:"duration_until_refresh_sec,omitempty"`
 }
 
 func (lc *LineConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin) error {
 	meta := login.Metadata.(*UserLoginMetadata)
 	login.Client = &LineClient{
-		UserLogin:    login,
-		AccessToken:  meta.AccessToken,
-		RefreshToken: meta.RefreshToken,
-		Mid:          meta.Mid,
-		HTTPClient:   &http.Client{Timeout: 10 * time.Second},
+		UserLogin:               login,
+		AccessToken:             meta.AccessToken,
+		RefreshToken:            meta.RefreshToken,
+		Mid:                     meta.Mid,
+		HTTPClient:              &http.Client{Timeout: 10 * time.Second},
+		durationUntilRefreshSec: meta.DurationUntilRefreshSec,
 	}
 	return nil
 }
@@ -338,6 +341,11 @@ func (ll *LineEmailLogin) finishLogin(ctx context.Context, res *line.LoginResult
 	}
 
 	meta := &UserLoginMetadata{AccessToken: token, RefreshToken: refreshToken, Email: ll.Email, Password: ll.Password, Certificate: res.Certificate, Mid: res.Mid}
+	if res.TokenV3IssueResult != nil && res.TokenV3IssueResult.DurationUntilRefreshSec != "" {
+		if d, err := strconv.ParseInt(res.TokenV3IssueResult.DurationUntilRefreshSec, 10, 64); err == nil {
+			meta.DurationUntilRefreshSec = d
+		}
+	}
 	if res.EncryptedKeyChain != "" && res.E2EEPublicKey != "" {
 		meta.EncryptedKeyChain = res.EncryptedKeyChain
 		meta.E2EEPublicKey = res.E2EEPublicKey
