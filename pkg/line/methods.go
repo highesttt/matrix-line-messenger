@@ -532,6 +532,26 @@ func (c *Client) UnsendMessage(reqSeq int64, messageID string) error {
 	return err
 }
 
+// GetSettings fetches account settings including e2eeEnable.
+func (c *Client) GetSettings() (*Settings, error) {
+	resp, err := c.callRPC("TalkService", "getSettings", 2)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int      `json:"code"`
+		Message string   `json:"message"`
+		Data    Settings `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, fmt.Errorf("failed to parse getSettings response: %w", err)
+	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("getSettings failed: %s", wrapper.Message)
+	}
+	return &wrapper.Data, nil
+}
+
 func (c *Client) SendChatRemoved(reqSeq int64, chatMid, lastReadMessageId string, lastReadMessageTime int64) error {
 	_, err := c.callRPC("TalkService", "sendChatRemoved", reqSeq, chatMid, lastReadMessageId, lastReadMessageTime)
 	return err

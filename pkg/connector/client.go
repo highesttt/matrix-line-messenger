@@ -143,6 +143,30 @@ func (lc *LineClient) Connect(ctx context.Context) {
 		StateEvent: status.StateConnected,
 	})
 
+	// Check server-side E2EE setting before initializing E2EE manager
+	e2eeEnabled := true // default to attempting E2EE
+	settingsClient := line.NewClient(lc.AccessToken)
+	if settings, err := settingsClient.GetSettings(); err != nil {
+		lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to fetch settings, assuming E2EE enabled")
+	} else {
+		e2eeEnabled = settings.E2EEEnable
+		lc.UserLogin.Bridge.Log.Info().Bool("e2ee_enable", settings.E2EEEnable).Msg("Server settings fetched")
+	}
+
+	if !e2eeEnabled {
+		lc.UserLogin.Bridge.Log.Info().Msg("E2EE disabled per server settings, skipping E2EE manager init")
+		lc.E2EE = nil
+	} else {
+		lc.initE2EE()
+	}
+
+	go lc.syncChats(ctx)
+	go lc.syncDMChats(ctx)
+	go lc.prefetchMessages(ctx)
+	go lc.pollLoop(ctx)
+}
+
+func (lc *LineClient) initE2EE() {
 	// Initialize E2EE manager and load keys
 	mgr, err := e2ee.NewManager()
 	if err != nil {
@@ -172,11 +196,6 @@ func (lc *LineClient) Connect(ctx context.Context) {
 			}
 		}
 	}
-
-	go lc.syncChats(ctx)
-	go lc.syncDMChats(ctx)
-	go lc.prefetchMessages(ctx)
-	go lc.pollLoop(ctx)
 }
 
 func (lc *LineClient) tryLogin(ctx context.Context) error {

@@ -309,3 +309,9 @@ type PageInfoResult struct {
 type ObsInfo struct {
 	CDN string `json:"cdn"`
 }
+
+type Settings struct {
+	E2EEEnable                     bool   `json:"e2eeEnable"`
+	PrivacyAllowSecondaryDeviceLogin bool `json:"privacyAllowSecondaryDeviceLogin"`
+	PreferenceLocale               string `json:"preferenceLocale"`
+}
