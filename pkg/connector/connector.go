@@ -77,16 +77,16 @@ func (lc *LineConnector) GetDBMetaTypes() database.MetaTypes {
 }
 
 type UserLoginMetadata struct {
-	AccessToken       string            `json:"access_token"`
-	RefreshToken      string            `json:"refresh_token,omitempty"`
-	Email             string            `json:"email,omitempty"`
-	Password          string            `json:"password,omitempty"`
-	Certificate       string            `json:"certificate,omitempty"`
-	Mid               string            `json:"mid,omitempty"`
-	EncryptedKeyChain string            `json:"encrypted_key_chain,omitempty"`
-	E2EEPublicKey     string            `json:"e2ee_public_key,omitempty"`
-	E2EEVersion       string            `json:"e2ee_version,omitempty"`
-	E2EEKeyID         string            `json:"e2ee_key_id,omitempty"`
+	AccessToken             string            `json:"access_token"`
+	RefreshToken            string            `json:"refresh_token,omitempty"`
+	Email                   string            `json:"email,omitempty"`
+	Password                string            `json:"password,omitempty"`
+	Certificate             string            `json:"certificate,omitempty"`
+	Mid                     string            `json:"mid,omitempty"`
+	EncryptedKeyChain       string            `json:"encrypted_key_chain,omitempty"`
+	E2EEPublicKey           string            `json:"e2ee_public_key,omitempty"`
+	E2EEVersion             string            `json:"e2ee_version,omitempty"`
+	E2EEKeyID               string            `json:"e2ee_key_id,omitempty"`
 	ExportedKeyMap          map[string]string `json:"exported_key_map,omitempty"`
 	DurationUntilRefreshSec int64             `json:"duration_until_refresh_sec,omitempty"`
 }
