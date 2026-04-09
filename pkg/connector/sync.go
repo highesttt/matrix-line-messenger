@@ -400,7 +400,6 @@ func (lc *LineClient) pollLoop(ctx context.Context) {
 							lc.UserLogin.Bridge.Log.Error().Err(errRecover).Msg("Failed to recover session, stopping poll loop")
 							lc.UserLogin.BridgeState.Send(status.BridgeState{
 								StateEvent: status.StateBadCredentials,
-								Error:      "line-logged-out",
 								Message:    "LINE session was invalidated (logged out by another client). Please re-authenticate the bridge.",
 							})
 							return

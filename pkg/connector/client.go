@@ -250,10 +250,17 @@ func (lc *LineClient) Connect(ctx context.Context) {
 		if err := lc.tryLogin(ctx); err != nil {
 			lc.UserLogin.BridgeState.Send(status.BridgeState{
 				StateEvent: status.StateBadCredentials,
-				Error:      "line-login-failed",
 				Message:    err.Error(),
 			})
 			return
+		}
+	}
+
+	// Update remote profile so bridge states include the user's name
+	if lc.UserLogin.RemoteProfile.Name == "" {
+		if profile, err := line.NewClient(lc.AccessToken).GetProfile(); err == nil {
+			lc.UserLogin.RemoteName = profile.DisplayName
+			lc.UserLogin.RemoteProfile = status.RemoteProfile{Name: profile.DisplayName}
 		}
 	}
 
@@ -261,7 +268,6 @@ func (lc *LineClient) Connect(ctx context.Context) {
 	if err := lc.ensureValidToken(ctx); err != nil {
 		lc.UserLogin.BridgeState.Send(status.BridgeState{
 			StateEvent: status.StateBadCredentials,
-			Error:      "line-token-expired",
 			Message:    fmt.Sprintf("session expired and could not be restored: %v", err),
 		})
 		return
@@ -337,13 +343,7 @@ func (lc *LineClient) tryLogin(ctx context.Context) error {
 			pin = res.PinCode
 		}
 		if pin != "" {
-			lc.UserLogin.Bridge.Log.Warn().Msg("PIN verification required — check your LINE mobile app to complete re-login")
-			// Send the PIN via bridge state so the user sees it in their Matrix client
-			lc.UserLogin.BridgeState.Send(status.BridgeState{
-				StateEvent: status.StateConnecting,
-				Error:      "line-pin-required",
-				Message:    fmt.Sprintf("Enter this PIN on your LINE mobile app: %s", pin),
-			})
+			lc.UserLogin.Bridge.Log.Warn().Msg("PIN verification required — certificate may be expired")
 		}
 		if res.Verifier == "" {
 			return fmt.Errorf("login requires interaction but no verifier returned")
