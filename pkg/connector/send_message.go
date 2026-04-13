@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -16,7 +15,6 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
-	"maunium.net/go/mautrix/id"
 
 	"github.com/highesttt/matrix-line-messenger/pkg/line"
 )
@@ -77,59 +75,6 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			payload, err = json.Marshal(map[string]string{"text": msg.Content.Body})
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal text payload: %w", err)
-			}
-		}
-
-		// Handle outbound mentions: parse matrix.to links from HTML body
-		if msg.Content.Format == event.FormatHTML && msg.Content.FormattedBody != "" {
-			mentionRegex := regexp.MustCompile(`<a href="https://matrix\.to/#/(@[^"]+)">([^<]+)</a>`)
-			matches := mentionRegex.FindAllStringSubmatchIndex(msg.Content.FormattedBody, -1)
-			if len(matches) > 0 {
-				type mentionEntry struct {
-					S string `json:"S"`
-					E string `json:"E"`
-					M string `json:"M"`
-				}
-				var mentionees []mentionEntry
-				plainBody := msg.Content.Body
-				plainRunes := []rune(plainBody)
-				searchFrom := 0 // track position to avoid matching same occurrence twice
-
-				for _, match := range matches {
-					mxidStr := msg.Content.FormattedBody[match[2]:match[3]]
-					displayName := msg.Content.FormattedBody[match[4]:match[5]]
-
-					// Resolve Matrix user ID to LINE MID
-					mxid := id.UserID(mxidStr)
-					ghost, gErr := lc.UserLogin.Bridge.GetGhostByMXID(ctx, mxid)
-					if gErr != nil || ghost == nil {
-						continue
-					}
-					lineMID := string(ghost.ID)
-
-					// Find the display name in the plain text body (rune-based), starting from searchFrom
-					displayRunes := []rune(displayName)
-					for idx := searchFrom; idx <= len(plainRunes)-len(displayRunes); idx++ {
-						if string(plainRunes[idx:idx+len(displayRunes)]) == displayName {
-							mentionees = append(mentionees, mentionEntry{
-								S: strconv.Itoa(idx),
-								E: strconv.Itoa(idx + len(displayRunes)),
-								M: lineMID,
-							})
-							searchFrom = idx + len(displayRunes)
-							break
-						}
-					}
-				}
-
-				if len(mentionees) > 0 {
-					mentionData := map[string]interface{}{
-						"MENTIONEES": mentionees,
-					}
-					if mentionJSON, mErr := json.Marshal(mentionData); mErr == nil {
-						contentMetadata["MENTION"] = string(mentionJSON)
-					}
-				}
 			}
 		}
 

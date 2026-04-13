@@ -887,51 +887,6 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 				RelatesTo: replyRelatesTo,
 			}
 
-			// Handle mentions in text messages
-			if mentionJSON, ok := data.ContentMetadata["MENTION"]; ok && mentionJSON != "" {
-				type lineMentionEntry struct {
-					S string `json:"S"`
-					E string `json:"E"`
-					M string `json:"M"`
-				}
-				type lineMentionData struct {
-					Mentionees []lineMentionEntry `json:"MENTIONEES"`
-				}
-				var mentionData lineMentionData
-				if err := json.Unmarshal([]byte(mentionJSON), &mentionData); err == nil && len(mentionData.Mentionees) > 0 {
-					textRunes := []rune(unwrappedText)
-					htmlBody := unwrappedText
-
-					// Process from right to left so indices remain valid
-					for i := len(mentionData.Mentionees) - 1; i >= 0; i-- {
-						m := mentionData.Mentionees[i]
-						start, errS := strconv.Atoi(m.S)
-						end, errE := strconv.Atoi(m.E)
-						if errS != nil || errE != nil || start < 0 || end > len(textRunes) || start >= end {
-							continue
-						}
-
-						mentionText := string(textRunes[start:end])
-						ghost, err := lc.UserLogin.Bridge.GetGhostByID(ctx, networkid.UserID(m.M))
-						if err == nil && ghost != nil {
-							mxid := ghost.Intent.GetMXID()
-							// Replace in the HTML body (which uses bytes, not runes)
-							// We need to find the mention text in the HTML body and replace it
-							htmlMention := fmt.Sprintf(`<a href="https://matrix.to/#/%s">%s</a>`, mxid, mentionText)
-							// Use byte offsets from rune positions
-							byteStart := len(string(textRunes[:start]))
-							byteEnd := len(string(textRunes[:end]))
-							htmlBody = htmlBody[:byteStart] + htmlMention + htmlBody[byteEnd:]
-						}
-					}
-
-					if htmlBody != unwrappedText {
-						content.Format = event.FormatHTML
-						content.FormattedBody = htmlBody
-					}
-				}
-			}
-
 			urlRegex := regexp.MustCompile(`(https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(/[^\s]*)?`)
 			if match := urlRegex.FindString(unwrappedText); match != "" {
 				match = strings.TrimRight(match, ".,;:!?")
