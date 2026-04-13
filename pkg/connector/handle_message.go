@@ -789,45 +789,20 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 			}
 
 			// Handle Contact (LINE contact — contentType 13)
+			// LINE only provides displayName and internal MID — no phone/email/LINE ID,
+			// so a vCard would be empty. Show a notice instead.
 			if ContentType(data.ContentType) == ContentContact {
 				displayName := data.ContentMetadata["displayName"]
 				if displayName == "" {
 					displayName = "Unknown"
-				}
-				// Build a minimal vCard for LINE contacts
-				vcard := fmt.Sprintf("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:%s\r\nEND:VCARD\r\n", displayName)
-				fileName := displayName + ".vcf"
-				vcardBytes := []byte(vcard)
-				mxc, file, err := intent.UploadMedia(ctx, portal.MXID, vcardBytes, fileName, "text/vcard")
-				if err != nil {
-					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload LINE contact vCard")
-					return &bridgev2.ConvertedMessage{
-						Parts: []*bridgev2.ConvertedMessagePart{
-							{
-								Type: event.EventMessage,
-								Content: &event.MessageEventContent{
-									MsgType:   event.MsgNotice,
-									Body:      fmt.Sprintf("Shared contact: %s", displayName),
-									RelatesTo: replyRelatesTo,
-								},
-							},
-						},
-					}, nil
 				}
 				return &bridgev2.ConvertedMessage{
 					Parts: []*bridgev2.ConvertedMessagePart{
 						{
 							Type: event.EventMessage,
 							Content: &event.MessageEventContent{
-								MsgType:  event.MsgFile,
-								Body:     fileName,
-								URL:      mxc,
-								File:     file,
-								FileName: fileName,
-								Info: &event.FileInfo{
-									MimeType: "text/vcard",
-									Size:     len(vcardBytes),
-								},
+								MsgType:   event.MsgNotice,
+								Body:      fmt.Sprintf("LINE contact shared: %s. Open LINE to add them.", displayName),
 								RelatesTo: replyRelatesTo,
 							},
 						},
