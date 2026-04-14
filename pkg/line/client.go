@@ -20,7 +20,7 @@ import (
 
 const (
 	BaseURL          = "https://line-chrome-gw.line-apps.com/api/talk/thrift/Talk"
-	ExtensionVersion = "3.7.1"
+	ExtensionVersion = "3.7.2"
 	UserAgent        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
 )
 
@@ -302,7 +302,7 @@ func (c *Client) callRPC(service, method string, args ...interface{}) ([]byte, e
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("x-line-chrome-version", ExtensionVersion)
-	req.Header.Set("x-line-application", "CHROMEOS\t3.7.1\tChrome_OS\t1")
+	req.Header.Set("x-line-application", "CHROMEOS\t3.7.2\tChrome_OS")
 	req.Header.Set("x-lal", "en_US")
 	if c.AccessToken != "" {
 		req.Header.Set("x-line-access", c.AccessToken)
@@ -385,7 +385,7 @@ func (c *Client) postWithHMAC(fullURL string, body []byte) ([]byte, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("x-line-chrome-version", ExtensionVersion)
-	req.Header.Set("x-line-application", "CHROMEOS\t3.7.1\tChrome_OS\t1")
+	req.Header.Set("x-line-application", "CHROMEOS\t3.7.2\tChrome_OS")
 	req.Header.Set("x-lal", "en_US")
 	if c.AccessToken != "" {
 		req.Header.Set("x-line-access", c.AccessToken)
@@ -490,7 +490,7 @@ func (c *Client) UploadOBSPlain(data []byte, oid string, obsType string, fileNam
 	obsParamsB64 := base64.StdEncoding.EncodeToString(obsParamsJSON)
 
 	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("x-line-application", "CHROMEOS\t3.7.1\tChrome_OS\t1")
+	req.Header.Set("x-line-application", "CHROMEOS\t3.7.2\tChrome_OS")
 	req.Header.Set("x-lal", "en_US")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("X-Obs-Params", obsParamsB64)
@@ -549,7 +549,7 @@ func (c *Client) UploadOBSWithSID(data []byte, sid string) (string, error) {
 	obsParamsB64 := base64.StdEncoding.EncodeToString(obsParamsJSON)
 
 	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("x-line-application", "CHROMEOS\t3.7.1\tChrome_OS\t1")
+	req.Header.Set("x-line-application", "CHROMEOS\t3.7.2\tChrome_OS")
 	req.Header.Set("x-lal", "en_US")
 	// OBS expects application/octet-stream for binary uploads
 	req.Header.Set("Content-Type", "application/octet-stream")
@@ -610,7 +610,7 @@ func (c *Client) UploadOBSWithOIDAndSID(data []byte, oid string, sid string) err
 	obsParamsB64 := base64.StdEncoding.EncodeToString(obsParamsJSON)
 
 	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("x-line-application", "CHROMEOS\t3.7.1\tChrome_OS\t1")
+	req.Header.Set("x-line-application", "CHROMEOS\t3.7.2\tChrome_OS")
 	req.Header.Set("x-lal", "en_US")
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("X-Obs-Params", obsParamsB64)

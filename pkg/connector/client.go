@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,8 +29,15 @@ type LineClient struct {
 	reqSeqMu    sync.Mutex
 	sentReqSeqs map[int]time.Time
 
-	noE2EEGroups map[string]time.Time // chatMid -> when group E2EE failure was cached
-	contactCache map[string]cachedContact
+	noE2EEGroups   map[string]time.Time // chatMid -> when group E2EE failure was cached
+	contactCache   map[string]cachedContact
+	mediaFlowCache map[string]cachedMediaFlow
+}
+
+type cachedMediaFlow struct {
+	flowMap  map[string]int
+	cachedAt time.Time
+	ttl      time.Duration
 }
 
 type peerKeyInfo struct {
@@ -44,6 +52,53 @@ const contactCacheTTL = 1 * time.Hour
 type cachedContact struct {
 	line.Contact
 	cachedAt time.Time
+}
+
+const defaultMediaFlowTTL = 6 * time.Hour
+
+// shouldUseE2EEMediaFlow checks whether the server wants E2EE upload (flow 2)
+// for the given chat and content type. Returns true for E2EE, false for plain.
+// Falls back to true (E2EE) if the server call fails, to preserve existing behavior.
+func (lc *LineClient) shouldUseE2EEMediaFlow(chatMid string, contentType int) bool {
+	if lc.mediaFlowCache == nil {
+		lc.mediaFlowCache = make(map[string]cachedMediaFlow)
+	}
+
+	if cached, ok := lc.mediaFlowCache[chatMid]; ok && time.Since(cached.cachedAt) < cached.ttl {
+		flow, exists := cached.flowMap[strconv.Itoa(contentType)]
+		if exists {
+			return flow == 2
+		}
+		// Content type not in map — default to E2EE
+		return true
+	}
+
+	client := line.NewClient(lc.AccessToken)
+	resp, err := client.DetermineMediaMessageFlow(chatMid)
+	if err != nil {
+		lc.UserLogin.Bridge.Log.Warn().Err(err).Str("chat_mid", chatMid).
+			Msg("Failed to determine media flow, defaulting to E2EE upload")
+		return true
+	}
+
+	ttl := defaultMediaFlowTTL
+	if resp.CacheTTLMillis != "" {
+		if parsed, err := strconv.ParseInt(resp.CacheTTLMillis, 10, 64); err == nil && parsed > 0 {
+			ttl = time.Duration(parsed) * time.Millisecond
+		}
+	}
+
+	lc.mediaFlowCache[chatMid] = cachedMediaFlow{
+		flowMap:  resp.FlowMap,
+		cachedAt: time.Now(),
+		ttl:      ttl,
+	}
+
+	flow, exists := resp.FlowMap[strconv.Itoa(contentType)]
+	if exists {
+		return flow == 2
+	}
+	return true
 }
 
 var _ bridgev2.NetworkAPI = (*LineClient)(nil)
@@ -84,8 +139,7 @@ func (lc *LineClient) isRefreshRequired(err error) bool {
 
 func (lc *LineClient) isLoggedOut(err error) bool {
 	msg := err.Error()
-	return strings.Contains(msg, "V3_TOKEN_CLIENT_LOGGED_OUT") ||
-		strings.Contains(msg, "\"code\":10051")
+	return strings.Contains(msg, "V3_TOKEN_CLIENT_LOGGED_OUT")
 }
 
 // recoverToken attempts to restore a valid session by refreshing, then re-logging in.

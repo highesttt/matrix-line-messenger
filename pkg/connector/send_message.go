@@ -54,6 +54,22 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		contentMetadata["e2eeVersion"] = "2"
 	}
 
+	// For non-text messages, check with the server whether to use E2EE or plain media upload.
+	// This must happen before media processing since it affects the upload path.
+	useE2EEMedia := !plainText
+	if useE2EEMedia && msg.Content.MsgType != event.MsgText {
+		mediaContentType := contentTypeForMsgType(msg.Content.MsgType)
+		if !lc.shouldUseE2EEMediaFlow(portalMid, mediaContentType) {
+			lc.UserLogin.Bridge.Log.Info().
+				Str("portal", portalMid).
+				Int("content_type", mediaContentType).
+				Msg("Server indicates plain media flow for this chat")
+			useE2EEMedia = false
+			plainText = true
+			delete(contentMetadata, "e2eeVersion")
+		}
+	}
+
 	// For plain text, we set lineMsg.Text directly; payload is used only for E2EE.
 	var payload []byte
 	var plainTextBody string // used when plainText == true for text messages
@@ -674,6 +690,21 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 	}, nil
 }
 
+func contentTypeForMsgType(msgType event.MessageType) int {
+	switch msgType {
+	case event.MsgImage:
+		return int(ContentImage)
+	case event.MsgVideo:
+		return int(ContentVideo)
+	case event.MsgAudio:
+		return int(ContentAudio)
+	case event.MsgFile:
+		return int(ContentFile)
+	default:
+		return int(ContentText)
+	}
+}
+
 func (lc *LineClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.MatrixMessageRemove) error {
 	client := line.NewClient(lc.AccessToken)
 
@@ -685,7 +716,15 @@ func (lc *LineClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridge
 	lc.sentReqSeqs[reqSeq] = time.Now()
 	lc.reqSeqMu.Unlock()
 
-	return client.UnsendMessage(int64(reqSeq), string(msg.TargetMessage.ID))
+	err := client.UnsendMessage(int64(reqSeq), string(msg.TargetMessage.ID))
+	if err != nil && strings.Contains(err.Error(), "message too old") {
+		return bridgev2.WrapErrorInStatus(fmt.Errorf("message too old to unsend on LINE (24h limit)")).
+			WithStatus(event.MessageStatusFail).
+			WithErrorReason(event.MessageStatusTooOld).
+			WithIsCertain(true).
+			WithSendNotice(true)
+	}
+	return err
 }
 
 func (lc *LineClient) HandleMatrixLeaveRoom(ctx context.Context, portal *bridgev2.Portal) error {

@@ -536,3 +536,25 @@ func (c *Client) SendChatRemoved(reqSeq int64, chatMid, lastReadMessageId string
 	_, err := c.callRPC("TalkService", "sendChatRemoved", reqSeq, chatMid, lastReadMessageId, lastReadMessageTime)
 	return err
 }
+
+// DetermineMediaMessageFlow asks the server which upload path to use for media
+// in a given chat. Flow value 2 = E2EE encrypted upload, 1 = plain upload.
+func (c *Client) DetermineMediaMessageFlow(chatMid string) (*MediaMessageFlowResponse, error) {
+	req := map[string]string{"chatMid": chatMid}
+	resp, err := c.callRPC("TalkService", "determineMediaMessageFlow", req)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int                      `json:"code"`
+		Message string                   `json:"message"`
+		Data    MediaMessageFlowResponse `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, fmt.Errorf("failed to parse determineMediaMessageFlow response: %w", err)
+	}
+	if wrapper.Code != 0 {
+		return nil, fmt.Errorf("determineMediaMessageFlow failed: %s", wrapper.Message)
+	}
+	return &wrapper.Data, nil
+}

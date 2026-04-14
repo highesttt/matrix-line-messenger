@@ -25,7 +25,7 @@ import (
 func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 	// Only process known content types; skip system messages (group created, member invited, etc.)
 	switch ContentType(msg.ContentType) {
-	case ContentText, ContentImage, ContentVideo, ContentAudio, ContentSticker, ContentFile:
+	case ContentText, ContentImage, ContentVideo, ContentAudio, ContentSticker, ContentContact, ContentFile, ContentLocation:
 		// supported — continue
 	default:
 		lc.UserLogin.Bridge.Log.Debug().
@@ -156,6 +156,48 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 		ID:   networkid.MessageID(msg.ID),
 		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data line.Message) (*bridgev2.ConvertedMessage, error) {
 			replyRelatesTo := lc.resolveReplyRelatesTo(ctx, &data)
+
+			// Handle call events (ORGCONTP == "CALL")
+			if data.ContentMetadata["ORGCONTP"] == "CALL" {
+				callType := "Voice"
+				if data.ContentMetadata["TYPE"] == "V" {
+					callType = "Video"
+				}
+
+				durationMs, _ := strconv.Atoi(data.ContentMetadata["DURATION"])
+				duration := durationMs / 1000
+				result := data.ContentMetadata["RESULT"]
+
+				var body string
+				switch {
+				case duration > 0:
+					mins := duration / 60
+					secs := duration % 60
+					if mins > 0 {
+						body = fmt.Sprintf("%s call (%dm%02ds)", callType, mins, secs)
+					} else {
+						body = fmt.Sprintf("%s call (%ds)", callType, secs)
+					}
+				case result == "CANCELED":
+					body = fmt.Sprintf("Missed %s call", strings.ToLower(callType))
+				default:
+					body = fmt.Sprintf("Missed %s call", strings.ToLower(callType))
+				}
+
+				return &bridgev2.ConvertedMessage{
+					Parts: []*bridgev2.ConvertedMessagePart{
+						{
+							Type: event.EventMessage,
+							Content: &event.MessageEventContent{
+								MsgType:   event.MsgNotice,
+								Body:      body,
+								RelatesTo: replyRelatesTo,
+							},
+						},
+					},
+				}, nil
+			}
+
 			// Handle Images
 			client := line.NewClient(lc.AccessToken)
 			if ContentType(data.ContentType) == ContentImage {
@@ -805,6 +847,137 @@ func (lc *LineClient) queueIncomingMessage(msg *line.Message, opType int) {
 							Content: &event.MessageEventContent{
 								MsgType:   event.MsgText,
 								Body:      stkTxt,
+								RelatesTo: replyRelatesTo,
+							},
+						},
+					},
+				}, nil
+			}
+
+			// Handle Location
+			if ContentType(data.ContentType) == ContentLocation {
+				if data.Location == nil {
+					return &bridgev2.ConvertedMessage{
+						Parts: []*bridgev2.ConvertedMessagePart{
+							{
+								Type: event.EventMessage,
+								Content: &event.MessageEventContent{
+									MsgType: event.MsgNotice,
+									Body:    "[Location unavailable]",
+								},
+							},
+						},
+					}, nil
+				}
+				if data.Location != nil {
+					geoURI := fmt.Sprintf("geo:%.6f,%.6f", data.Location.Latitude, data.Location.Longitude)
+					mapsURL := fmt.Sprintf("https://maps.google.com/maps?q=%.6f%%2C%.6f", data.Location.Latitude, data.Location.Longitude)
+
+					var bodyParts []string
+					if data.Location.Title != "" {
+						bodyParts = append(bodyParts, data.Location.Title)
+					}
+					if data.Location.Address != "" {
+						bodyParts = append(bodyParts, data.Location.Address)
+					}
+					bodyParts = append(bodyParts, mapsURL)
+					body := strings.Join(bodyParts, "\n")
+					return &bridgev2.ConvertedMessage{
+						Parts: []*bridgev2.ConvertedMessagePart{
+							{
+								Type: event.EventMessage,
+								Content: &event.MessageEventContent{
+									MsgType:   event.MsgLocation,
+									Body:      body,
+									GeoURI:    geoURI,
+									RelatesTo: replyRelatesTo,
+								},
+							},
+						},
+					}, nil
+				}
+			}
+
+			// Handle Contact (LINE contact — contentType 13)
+			// LINE only provides displayName and internal MID — no phone/email/LINE ID,
+			// so a vCard would be empty. Show a notice instead.
+			if ContentType(data.ContentType) == ContentContact {
+				displayName := data.ContentMetadata["displayName"]
+				if displayName == "" {
+					displayName = "Unknown"
+				}
+				return &bridgev2.ConvertedMessage{
+					Parts: []*bridgev2.ConvertedMessagePart{
+						{
+							Type: event.EventMessage,
+							Content: &event.MessageEventContent{
+								MsgType:   event.MsgNotice,
+								Body:      fmt.Sprintf("LINE contact shared: %s. Open LINE to add them.", displayName),
+								RelatesTo: replyRelatesTo,
+							},
+						},
+					},
+				}, nil
+			}
+
+			// Handle device/phone contact shared via ORGCONTP (contentType 0 with vCard)
+			if data.ContentMetadata["ORGCONTP"] == "CONTACT" {
+				displayName := data.ContentMetadata["displayName"]
+				if displayName == "" {
+					displayName = "Unknown"
+				}
+				vcard := data.ContentMetadata["vCard"]
+				if vcard == "" {
+					// No vCard data — fall back to text notice
+					body := fmt.Sprintf("Shared contact: %s", displayName)
+					if unwrappedText != "" {
+						body += "\n" + unwrappedText
+					}
+					return &bridgev2.ConvertedMessage{
+						Parts: []*bridgev2.ConvertedMessagePart{
+							{
+								Type: event.EventMessage,
+								Content: &event.MessageEventContent{
+									MsgType:   event.MsgNotice,
+									Body:      body,
+									RelatesTo: replyRelatesTo,
+								},
+							},
+						},
+					}, nil
+				}
+				fileName := displayName + ".vcf"
+				vcardBytes := []byte(vcard)
+				mxc, file, err := intent.UploadMedia(ctx, portal.MXID, vcardBytes, fileName, "text/vcard")
+				if err != nil {
+					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload device contact vCard")
+					return &bridgev2.ConvertedMessage{
+						Parts: []*bridgev2.ConvertedMessagePart{
+							{
+								Type: event.EventMessage,
+								Content: &event.MessageEventContent{
+									MsgType:   event.MsgNotice,
+									Body:      fmt.Sprintf("Shared contact: %s", displayName),
+									RelatesTo: replyRelatesTo,
+								},
+							},
+						},
+					}, nil
+				}
+				return &bridgev2.ConvertedMessage{
+					Parts: []*bridgev2.ConvertedMessagePart{
+						{
+							Type: event.EventMessage,
+							Content: &event.MessageEventContent{
+								MsgType:  event.MsgFile,
+								Body:     fileName,
+								URL:      mxc,
+								File:     file,
+								FileName: fileName,
+								Info: &event.FileInfo{
+									MimeType: "text/vcard",
+									Size:     len(vcardBytes),
+								},
 								RelatesTo: replyRelatesTo,
 							},
 						},

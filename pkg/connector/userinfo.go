@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"go.mau.fi/util/jsontime"
 	"go.mau.fi/util/ptr"
 
 	"maunium.net/go/mautrix/bridgev2"
@@ -45,8 +46,10 @@ func (lc *LineClient) GetCapabilities(ctx context.Context, portal *bridgev2.Port
 		MaxTextLength:         5000,
 		Reply:                 event.CapLevelFullySupported,
 		ReadReceipts:          true,
-		Delete:                event.CapLevelPartialSupport,
+		Delete:                event.CapLevelFullySupported,
+		DeleteMaxAge:          &jsontime.Seconds{Duration: 24 * time.Hour},
 		DeleteChatForEveryone: true,
+		LocationMessage:       event.CapLevelPartialSupport,
 		File: event.FileFeatureMap{
 			event.MsgImage: {
 				Caption: event.CapLevelRejected,

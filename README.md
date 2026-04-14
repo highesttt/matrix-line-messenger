@@ -33,9 +33,19 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 
 ## Features
 
-ℹ️ Works with both [Letter Sealing](readme/LETTER_SEALING.md) `ON` and `OFF` accounts.
-
-- [x] Messages (Text, Images, Videos, Files, Audio/Voice notes, and GIFs)
+- [x] Messages
+  - [x] Text
+  - [x] Images
+  - [x] Videos
+  - [x] Files
+  - [x] Voice notes
+  - [ ] Audio files
+  - [x] GIFs
+  - [x] Location sharing (receive only)
+  - [x] Contact sharing (receive only)
+    - [x] LINE friend (name only)
+    - [x] Device contact (vCard)
+  - [ ] Mentions
 - [x] Read receipts
 - [x] Reaction support (Receive ONLY)
 - [x] Replies
@@ -44,6 +54,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
 - [x] Sticker retrieval support
 - [x] Link previews
 - [x] Message unsending/deletion
+- [x] Call notifications (voice and video, with duration)
 - [x] Leaving chats
 
 ## Setup

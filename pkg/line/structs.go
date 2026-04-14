@@ -65,6 +65,13 @@ type Operation struct {
 	CreatedTime json.Number `json:"createdTime"`
 }
 
+type MessageLocation struct {
+	Title     string  `json:"title"`
+	Address   string  `json:"address"`
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+}
+
 type Message struct {
 	ID              string            `json:"id"`
 	From            string            `json:"from"`
@@ -76,7 +83,8 @@ type Message struct {
 	HasContent      bool              `json:"hasContent,omitempty"`
 	ContentMetadata map[string]string `json:"contentMetadata"`
 
-	Text string `json:"text,omitempty"`
+	Text     string           `json:"text,omitempty"`
+	Location *MessageLocation `json:"location,omitempty"`
 
 	Chunks []string `json:"chunks,omitempty"`
 
@@ -308,4 +316,9 @@ type PageInfoResult struct {
 
 type ObsInfo struct {
 	CDN string `json:"cdn"`
+}
+
+type MediaMessageFlowResponse struct {
+	FlowMap        map[string]int `json:"flowMap"`
+	CacheTTLMillis string         `json:"cacheTtlMillis"`
 }

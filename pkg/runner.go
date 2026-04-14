@@ -66,7 +66,7 @@ func GetRunner() (*Runner, error) {
 		}
 		clientVersion := os.Getenv("CLIENT_VERSION")
 		if clientVersion == "" {
-			clientVersion = "3.7.1"
+			clientVersion = "3.7.2"
 		}
 
 		rt, err := ltsm.NewRuntime()

@@ -19,12 +19,14 @@ const (
 type ContentType int
 
 const (
-	ContentText    ContentType = 0
-	ContentImage   ContentType = 1
-	ContentVideo   ContentType = 2
-	ContentAudio   ContentType = 3
-	ContentSticker ContentType = 7
-	ContentFile    ContentType = 14
+	ContentText     ContentType = 0
+	ContentImage    ContentType = 1
+	ContentVideo    ContentType = 2
+	ContentAudio    ContentType = 3
+	ContentSticker  ContentType = 7
+	ContentContact  ContentType = 13
+	ContentFile     ContentType = 14
+	ContentLocation ContentType = 15
 )
 
 // ToType values for LINE message destinations.
