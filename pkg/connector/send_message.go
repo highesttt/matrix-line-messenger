@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -96,6 +97,11 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 	// For group chats, save original data in case E2EE encryption fails and we fall back to plain.
 	var originalMediaData []byte
 	var originalThumbData []byte
+
+	// For file uploads, save the raw data so we can retry with ZIP wrapping if LINE rejects
+	// the raw file (some file types require ZIP, others like PDF work directly).
+	var rawFileData []byte
+	var rawFileName string
 
 	switch effectiveMsgType {
 	case event.MsgText:
@@ -253,6 +259,9 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		if fileName == "" {
 			fileName = "file.bin"
 		}
+		rawFileData = data
+		rawFileName = fileName
+
 		contentMetadata["FILE_NAME"] = fileName
 		contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(data))
 		contentMetadata["contentType"] = fmt.Sprintf("%d", ContentFile)
@@ -584,6 +593,70 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 	lc.reqSeqMu.Unlock()
 
 	sentMsg, err := client.SendMessage(int64(reqSeq), lineMsg)
+
+	// LINE rejects some file types from the Chrome Extension client.
+	// Retry by wrapping the file in a ZIP archive (matching Chrome Extension behavior).
+	if err != nil && strings.Contains(err.Error(), "Extension does not support file upload") && rawFileData != nil {
+		lc.UserLogin.Bridge.Log.Info().Str("file_name", rawFileName).Msg("File upload rejected by LINE, retrying with ZIP wrapping")
+
+		zipData, zipErr := wrapInZip(rawFileName, rawFileData)
+		if zipErr != nil {
+			return nil, fmt.Errorf("failed to wrap file in zip: %w", zipErr)
+		}
+		zipFileName := rawFileName + ".zip"
+
+		contentMetadata["FILE_NAME"] = zipFileName
+		contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(zipData))
+		lineMsg.ContentMetadata = contentMetadata
+
+		if plainText {
+			plainMediaData = zipData
+		} else {
+			// Re-encrypt and re-upload the zipped data
+			uploadData, keyMaterialB64, encErr := lc.encryptFileData(zipData)
+			if encErr != nil {
+				return nil, fmt.Errorf("failed to encrypt zipped file: %w", encErr)
+			}
+			oid, uploadErr := client.UploadOBSWithSID(uploadData, "emf")
+			if uploadErr != nil {
+				return nil, fmt.Errorf("failed to upload zipped file to OBS: %w", uploadErr)
+			}
+			contentMetadata["OID"] = oid
+			contentMetadata["ENC_KM"] = keyMaterialB64
+			lineMsg.ContentMetadata = contentMetadata
+
+			zipPayload, _ := json.Marshal(map[string]string{
+				"keyMaterial": keyMaterialB64,
+				"fileName":    zipFileName,
+			})
+
+			if isGroup {
+				chunks, err = lc.E2EE.EncryptGroupMessageRaw(portalMid, fromMid, contentType, zipPayload)
+			} else {
+				myRaw, myKeyID, errKey := lc.E2EE.MyKeyIDs()
+				if errKey != nil {
+					return nil, fmt.Errorf("missing own E2EE key for zip retry: %w", errKey)
+				}
+				peerRaw, peerPub, errPeer := lc.ensurePeerKey(ctx, portalMid)
+				if errPeer != nil {
+					return nil, fmt.Errorf("failed to get peer key for zip retry: %w", errPeer)
+				}
+				chunks, err = lc.E2EE.EncryptMessageV2Raw(portalMid, fromMid, myKeyID, peerPub, myRaw, peerRaw, contentType, zipPayload)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("failed to encrypt zipped file message: %w", err)
+			}
+			lineMsg.Chunks = chunks
+		}
+
+		retryReqSeq := int(time.Now().UnixMilli() % 1_000_000_000)
+		lc.reqSeqMu.Lock()
+		lc.sentReqSeqs[retryReqSeq] = time.Now()
+		lc.reqSeqMu.Unlock()
+
+		sentMsg, err = client.SendMessage(int64(retryReqSeq), lineMsg)
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -624,6 +697,24 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			Timestamp: time.UnixMilli(now),
 		},
 	}, nil
+}
+
+// wrapInZip creates a ZIP archive containing a single file with the given name and data.
+// LINE's Chrome Extension wraps file uploads in ZIP before sending.
+func wrapInZip(fileName string, data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	fw, err := zw.Create(fileName)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := fw.Write(data); err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func contentTypeForMsgType(msgType event.MessageType) int {
