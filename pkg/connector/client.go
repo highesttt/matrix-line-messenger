@@ -32,6 +32,8 @@ type LineClient struct {
 	noE2EEGroups   map[string]time.Time // chatMid -> when group E2EE failure was cached
 	contactCache   map[string]cachedContact
 	mediaFlowCache map[string]cachedMediaFlow
+
+	wg sync.WaitGroup
 }
 
 type cachedMediaFlow struct {
@@ -227,6 +229,7 @@ func (lc *LineClient) Connect(ctx context.Context) {
 		}
 	}
 
+	lc.wg.Add(4)
 	go lc.syncChats(ctx)
 	go lc.syncDMChats(ctx)
 	go lc.prefetchMessages(ctx)
@@ -346,7 +349,9 @@ func (lc *LineClient) ensureValidToken(ctx context.Context) error {
 	return lc.tryLogin(ctx)
 }
 
-func (lc *LineClient) Disconnect() {}
+func (lc *LineClient) Disconnect() {
+	lc.wg.Wait()
+}
 
 func (lc *LineClient) IsLoggedIn() bool { return lc.AccessToken != "" }
 

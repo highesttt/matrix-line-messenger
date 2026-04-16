@@ -610,6 +610,9 @@ func (m *Manager) HasPeerPublicKey(rawKeyID int) bool {
 }
 
 func (m *Manager) RegisterPeerPublicKey(rawKeyID int, pubB64 string) {
+	if normalized, err := gen.NormalizePeerPublicKeyB64(pubB64); err == nil {
+		pubB64 = normalized
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.peerPublic[rawKeyID] = pubB64

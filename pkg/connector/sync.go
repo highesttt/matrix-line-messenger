@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -23,6 +24,8 @@ import (
 )
 
 func (lc *LineClient) syncDMChats(ctx context.Context) {
+	defer lc.wg.Done()
+
 	client := line.NewClient(lc.AccessToken)
 	opts := line.MessageBoxesOptions{
 		ActiveOnly:                     true,
@@ -104,6 +107,8 @@ func (lc *LineClient) syncDMChats(ctx context.Context) {
 }
 
 func (lc *LineClient) prefetchMessages(ctx context.Context) {
+	defer lc.wg.Done()
+
 	client := line.NewClient(lc.AccessToken)
 	opts := line.MessageBoxesOptions{
 		ActiveOnly:                     true,
@@ -151,6 +156,8 @@ func (lc *LineClient) prefetchMessages(ctx context.Context) {
 }
 
 func (lc *LineClient) syncChats(ctx context.Context) {
+	defer lc.wg.Done()
+
 	client := line.NewClient(lc.AccessToken)
 	midsResp, err := client.GetAllChatMids(true, true)
 	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
@@ -317,6 +324,8 @@ func (lc *LineClient) generateNameFromMembers(members map[string]bool) string {
 }
 
 func (lc *LineClient) pollLoop(ctx context.Context) {
+	defer lc.wg.Done()
+
 	var localRev int64 = 0
 	client := line.NewClient(lc.AccessToken)
 
@@ -358,6 +367,7 @@ func (lc *LineClient) pollLoop(ctx context.Context) {
 
 				}
 			}
+			lc.wg.Add(3)
 			go lc.syncChats(ctx)
 			go lc.syncDMChats(ctx)
 			go lc.prefetchMessages(ctx)
@@ -382,34 +392,32 @@ func (lc *LineClient) pollLoop(ctx context.Context) {
 	}
 
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			err := client.ListenSSE(localRev, handler)
-			if err != nil {
-				if err.Error() != "EOF" {
-					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("SSE Disconnected")
-
-					isAuthErr := strings.Contains(err.Error(), "SSE error: 401") ||
-						strings.Contains(err.Error(), "SSE error: 403") ||
-						lc.isLoggedOut(err)
-
-					if isAuthErr {
-						if errRecover := lc.recoverToken(ctx); errRecover != nil {
-							lc.UserLogin.Bridge.Log.Error().Err(errRecover).Msg("Failed to recover session, stopping poll loop")
-							lc.UserLogin.BridgeState.Send(status.BridgeState{
-								StateEvent: status.StateBadCredentials,
-								Error:      "line-logged-out",
-								Message:    "LINE session was invalidated (logged out by another client). Please re-authenticate the bridge.",
-							})
-							return
-						}
-						client = line.NewClient(lc.AccessToken)
-					}
-				}
-				time.Sleep(3 * time.Second)
+		err := client.ListenSSE(ctx, localRev, handler)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
 			}
+			if err.Error() != "EOF" {
+				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("SSE Disconnected")
+
+				isAuthErr := strings.Contains(err.Error(), "SSE error: 401") ||
+					strings.Contains(err.Error(), "SSE error: 403") ||
+					lc.isLoggedOut(err)
+
+				if isAuthErr {
+					if errRecover := lc.recoverToken(ctx); errRecover != nil {
+						lc.UserLogin.Bridge.Log.Error().Err(errRecover).Msg("Failed to recover session, stopping poll loop")
+						lc.UserLogin.BridgeState.Send(status.BridgeState{
+							StateEvent: status.StateBadCredentials,
+							Error:      "line-logged-out",
+							Message:    "LINE session was invalidated (logged out by another client). Please re-authenticate the bridge.",
+						})
+						return
+					}
+					client = line.NewClient(lc.AccessToken)
+				}
+			}
+			time.Sleep(3 * time.Second)
 		}
 	}
 }
@@ -461,7 +469,11 @@ func (lc *LineClient) handleOperation(ctx context.Context, op line.Operation) {
 
 	if OperationType(op.Type) == OpChatUpdate2 || OperationType(op.Type) == OpChatUpdate {
 		lc.UserLogin.Bridge.Log.Info().Str("chat_mid", op.Param1).Int("op_type", op.Type).Msg("Received chat update operation")
-		go lc.syncSingleChat(context.Background(), op)
+		lc.wg.Add(1)
+		go func() {
+			defer lc.wg.Done()
+			lc.syncSingleChat(context.Background(), op)
+		}()
 	}
 
 	if OperationType(op.Type) == OpReadReceipt {
@@ -502,7 +514,10 @@ func (lc *LineClient) handleOperation(ctx context.Context, op line.Operation) {
 	}
 
 	if OperationType(op.Type) == OpReaction {
+		lc.wg.Add(1)
 		go func() {
+			defer lc.wg.Done()
+
 			param2, err := line.ParseReactionParam2(op.Param2)
 			if err != nil {
 				lc.UserLogin.Bridge.Log.Error().Err(err).Msg("Failed to parse reaction param2")

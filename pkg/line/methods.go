@@ -269,7 +269,26 @@ func parseE2EEPublicKey(rawData []byte) (*E2EEPublicKey, error) {
 	pub := ""
 	keyID := int64(0)
 	if pk, ok := data["publicKey"].(map[string]any); ok {
-		pub = findString(pk["keyData"])
+		// Try keyData as a direct string first (most common LINE response shape).
+		switch kd := pk["keyData"].(type) {
+		case string:
+			pub = kd
+		case map[string]any:
+			// Nested object — check known field names deterministically before
+			// falling back to the non-deterministic recursive findString.
+			for _, name := range []string{"keyData", "publicKey", "key", "data", "value"} {
+				if s, ok := kd[name].(string); ok && s != "" {
+					pub = s
+					break
+				}
+			}
+			if pub == "" {
+				pub = findString(kd)
+			}
+		default:
+			// keyData is absent or an unexpected type; findString on the whole pk object.
+			pub = findString(pk)
+		}
 		if keyID == 0 {
 			keyID = findInt64(pk["keyId"])
 		}

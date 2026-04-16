@@ -39,7 +39,7 @@ Based on the [mautrix-twilio](https://github.com/mautrix/twilio) bridge
   - [x] Videos
   - [x] Files
   - [x] Voice notes
-  - [ ] Audio files
+  - [x] Audio files
   - [x] GIFs
   - [x] Location sharing (receive only)
   - [x] Contact sharing (receive only)

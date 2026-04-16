@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/highesttt/matrix-line-messenger/pkg/ltsm"
@@ -381,10 +382,11 @@ func (r *Runner) ChannelCreate(keyID int, peerPublicB64 string) (int, error) {
 		return 0, err
 	}
 
-	peerPubBytes, err := base64.StdEncoding.DecodeString(peerPublicB64)
+	normalized, err := NormalizePeerPublicKeyB64(peerPublicB64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid peer public key: %w", err)
 	}
+	peerPubBytes, _ := base64.StdEncoding.DecodeString(normalized)
 
 	chanPtr, err := r.rt.E2EEKeyCreateChannel(keyPtr, peerPubBytes)
 	if err != nil {
@@ -657,6 +659,60 @@ func normalizeServerPublicKeyB64(serverPubB64 string) (string, error) {
 		serverRaw = serverRaw[len(serverRaw)-32:]
 	}
 	return base64.StdEncoding.EncodeToString(serverRaw), nil
+}
+
+// NormalizePeerPublicKeyB64 accepts a peer public key in any common encoding
+// (standard base64, base64url, unpadded variants, or hex) and returns a
+// standard-base64-encoded 32-byte Curve25519 public key.
+func NormalizePeerPublicKeyB64(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("empty peer public key")
+	}
+
+	// Try each base64 variant in order.
+	encodings := []struct {
+		name string
+		enc  *base64.Encoding
+	}{
+		{"StdEncoding", base64.StdEncoding},
+		{"URLEncoding", base64.URLEncoding},
+		{"RawStdEncoding", base64.RawStdEncoding},
+		{"RawURLEncoding", base64.RawURLEncoding},
+	}
+
+	var decoded []byte
+	for _, e := range encodings {
+		if b, err := e.enc.DecodeString(raw); err == nil && len(b) > 0 {
+			decoded = b
+			break
+		}
+	}
+
+	// Fallback: try hex decoding.
+	if decoded == nil {
+		if b, err := hex.DecodeString(raw); err == nil && len(b) > 0 {
+			decoded = b
+		}
+	}
+
+	if decoded == nil {
+		preview := raw
+		if len(preview) > 8 {
+			preview = preview[:8]
+		}
+		return "", fmt.Errorf("cannot decode peer public key (starts with %q): tried base64 std/url/raw, hex", preview)
+	}
+
+	if len(decoded) < 32 {
+		return "", fmt.Errorf("peer public key too short: got %d bytes, need 32", len(decoded))
+	}
+	// If longer than 32 bytes (e.g. type-prefix byte), take the last 32.
+	if len(decoded) > 32 {
+		decoded = decoded[len(decoded)-32:]
+	}
+
+	return base64.StdEncoding.EncodeToString(decoded), nil
 }
 
 func buildLoginSecret(pin string, publicKey []byte) (string, error) {
