@@ -27,41 +27,37 @@ func (h *Handler) ConvertImage(ctx context.Context, portal *bridgev2.Portal, int
 		return nil, nil
 	}
 
-	// Check MEDIA_CONTENT_INFO for animated flag before downloading
-	wantOriginal := false
+	// Check MEDIA_CONTENT_INFO for animated flag — used for download path and Matrix message type
+	metadataAnimated := false
 	if mediaInfo := data.ContentMetadata["MEDIA_CONTENT_INFO"]; mediaInfo != "" {
 		var info struct {
 			Animated bool `json:"animated"`
 		}
 		if json.Unmarshal([]byte(mediaInfo), &info) == nil && info.Animated {
-			wantOriginal = true
+			metadataAnimated = true
 		}
 	}
 
-	var imgData []byte
-	var err error
-	if isPlainMedia && wantOriginal {
-		imgData, err = client.DownloadOBSOriginal(oid, data.ID, "m")
-	} else if isPlainMedia {
-		imgData, err = client.DownloadOBSWithSID(oid, data.ID, "m")
-	} else if wantOriginal {
-		imgData, err = client.DownloadOBSOriginal(oid, data.ID, "emi")
-	} else {
-		imgData, err = client.DownloadOBS(oid, data.ID)
+	downloadImage := func(c *line.Client) ([]byte, error) {
+		sid := "emi"
+		if isPlainMedia {
+			sid = "m"
+		}
+		if metadataAnimated {
+			return c.DownloadOBSOriginal(oid, data.ID, sid)
+		}
+		if isPlainMedia {
+			return c.DownloadOBSWithSID(oid, data.ID, sid)
+		}
+		return c.DownloadOBS(oid, data.ID)
 	}
+
+	imgData, err := downloadImage(client)
 
 	// Refresh token if we get a 401
 	if newClient, ok := h.tryRecoverClient(ctx, err); ok {
 		client = newClient
-		if isPlainMedia && wantOriginal {
-			imgData, err = client.DownloadOBSOriginal(oid, data.ID, "m")
-		} else if isPlainMedia {
-			imgData, err = client.DownloadOBSWithSID(oid, data.ID, "m")
-		} else if wantOriginal {
-			imgData, err = client.DownloadOBSOriginal(oid, data.ID, "emi")
-		} else {
-			imgData, err = client.DownloadOBS(oid, data.ID)
-		}
+		imgData, err = downloadImage(client)
 	}
 
 	if err != nil {
@@ -113,28 +109,14 @@ func (h *Handler) ConvertImage(ctx context.Context, portal *bridgev2.Portal, int
 	} else if len(imgData) >= 3 && string(imgData[0:3]) == "GIF" {
 		fileName = "image.gif"
 		mimeType = "image/gif"
+		// Static GIF per data, but metadata says animated — trust metadata
+		isAnimated = metadataAnimated
 	} else if len(imgData) >= 8 && string(imgData[:8]) == "\x89PNG\r\n\x1a\n" {
 		fileName = "image.png"
 		mimeType = "image/png"
 	} else if len(imgData) >= 4 && string(imgData[:4]) == "RIFF" && len(imgData) >= 12 && string(imgData[8:12]) == "WEBP" {
 		fileName = "image.webp"
 		mimeType = "image/webp"
-	}
-
-	// Also check MEDIA_CONTENT_INFO metadata for animation flag
-	if !isAnimated {
-		if mediaInfo := data.ContentMetadata["MEDIA_CONTENT_INFO"]; mediaInfo != "" {
-			var info struct {
-				Animated bool `json:"animated"`
-			}
-			if json.Unmarshal([]byte(mediaInfo), &info) == nil && info.Animated {
-				isAnimated = true
-				if mimeType != "image/gif" {
-					fileName = "image.gif"
-					mimeType = "image/gif"
-				}
-			}
-		}
 	}
 
 	// Upload to Matrix
