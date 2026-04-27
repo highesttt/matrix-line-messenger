@@ -236,10 +236,9 @@ func (lq *LineQRLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {
 		return &bridgev2.LoginStep{
 			Type:         bridgev2.LoginStepTypeDisplayAndWait,
 			StepID:       "dev.highest.matrix.line.qr_pin",
-			Instructions: fmt.Sprintf("Enter this PIN in the LINE mobile app: %s", pin),
+			Instructions: fmt.Sprintf("Please open the LINE app on your mobile device and enter this PIN code: **%s**\n\nAfter entering the code, click Continue below.", pin),
 			DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{
-				Type: bridgev2.LoginDisplayTypeCode,
-				Data: pin,
+				Type: bridgev2.LoginDisplayTypeNothing,
 			},
 		}, nil
 	}
