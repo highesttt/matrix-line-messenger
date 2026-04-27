@@ -32,7 +32,7 @@ type Client struct {
 
 func NewClient(token string) *Client {
 	return &Client{
-		HTTPClient:  &http.Client{Timeout: 30 * time.Second},
+		HTTPClient:  newHTTPClient(30 * time.Second),
 		AccessToken: token,
 	}
 }
@@ -156,7 +156,7 @@ func (c *Client) waitForLoginJQ(verifier string) (*LoginResult, error) {
 	}
 	req.Header.Set("x-hmac", signature)
 
-	pollClient := &http.Client{Timeout: 200 * time.Second}
+	pollClient := newHTTPClient(200 * time.Second)
 	resp, err := pollClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -220,7 +220,7 @@ func (c *Client) waitForLoginLF1(verifier string) (*LoginResult, error) {
 	}
 	req.Header.Set("x-hmac", signature)
 
-	pollClient := &http.Client{Timeout: 120 * time.Second}
+	pollClient := newHTTPClient(120 * time.Second)
 	resp, err := pollClient.Do(req)
 	if err != nil {
 		return nil, err

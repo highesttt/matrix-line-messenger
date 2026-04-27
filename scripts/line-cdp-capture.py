@@ -42,7 +42,7 @@ LINE_DOMAINS = [
     "scdn.line-apps.com",
 ]
 
-CDP_PORT = 9222
+CDP_PORT = int(os.environ.get("CDP_PORT", "9222"))
 
 
 def is_line_url(url: str) -> bool:
@@ -117,7 +117,7 @@ class CDPCapture:
         print(f"Connecting to browser target: {ws_url}", file=sys.stderr)
 
         self.ws = websocket.WebSocket()
-        self.ws.connect(ws_url)
+        self.ws.connect(ws_url, suppress_origin=True)
 
         # Auto-attach to ALL targets (pages, extensions, service workers, etc.)
         # This makes Network events from extension contexts flow through our connection.
