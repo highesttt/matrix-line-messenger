@@ -13,15 +13,15 @@ type SecretResult struct {
 	PublicKeyBase64 string `json:"publicKeyBase64"`
 }
 
-// GenerateSecret performs the E2EE handshake logic using the WASM module via Node.js.
+// GenerateSecret creates the LINE login E2EE secret and stores the matching
+// Curve25519 private key in the shared LTSM runner for the follow-up keychain unwrap.
 func GenerateSecret() (*SecretResult, error) {
 	runner, err := gen.GetRunner()
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to get runner: %w", err)
 	}
-	res, err := runner.GenerateE2EESecret()
 
+	res, err := runner.GenerateE2EESecret()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate secret: %w", err)
 	}
@@ -32,5 +32,4 @@ func GenerateSecret() (*SecretResult, error) {
 		PublicKeyHex:    res.PublicKeyHex,
 		PublicKeyBase64: res.PublicKeyBase64,
 	}, nil
-
 }

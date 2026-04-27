@@ -233,14 +233,7 @@ func (lq *LineQRLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {
 			return lq.client.CheckPinCodeVerified(lq.AuthSessionID)
 		})
 
-		return &bridgev2.LoginStep{
-			Type:         bridgev2.LoginStepTypeDisplayAndWait,
-			StepID:       "dev.highest.matrix.line.qr_pin",
-			Instructions: fmt.Sprintf("Please open the LINE app on your mobile device and enter this PIN code: **%s**\n\nAfter entering the code, click Continue below.", pin),
-			DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{
-				Type: bridgev2.LoginDisplayTypeNothing,
-			},
-		}, nil
+		return linePINStep("dev.highest.matrix.line.qr_pin", pin), nil
 	}
 
 	return nil, fmt.Errorf("no pending QR login continuation")
@@ -455,17 +448,21 @@ func (ll *LineEmailLogin) handleLoginResponse(ctx context.Context, res *line.Log
 
 	if res.Certificate != "" {
 		ll.AwaitingPIN = true
-		return &bridgev2.LoginStep{
-			Type:         bridgev2.LoginStepTypeDisplayAndWait,
-			StepID:       "dev.highest.matrix.line.enter_pin",
-			Instructions: fmt.Sprintf("Please open the LINE app on your mobile device and enter this PIN code: **%s**\n\nAfter entering the code, click Continue below.", res.Certificate),
-			DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{
-				Type: bridgev2.LoginDisplayTypeNothing,
-			},
-		}, nil
+		return linePINStep("dev.highest.matrix.line.enter_pin", res.Certificate), nil
 	}
 
 	return nil, fmt.Errorf("login incomplete but no PIN found in response (Type: %d, Msg: %s)", res.Type, res.Message)
+}
+
+func linePINStep(stepID, pin string) *bridgev2.LoginStep {
+	return &bridgev2.LoginStep{
+		Type:         bridgev2.LoginStepTypeDisplayAndWait,
+		StepID:       stepID,
+		Instructions: fmt.Sprintf("Please open the LINE app on your mobile device and enter this PIN code: **%s**\n\nAfter entering the code, click Continue below.", pin),
+		DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{
+			Type: bridgev2.LoginDisplayTypeNothing,
+		},
+	}
 }
 
 func (ll *LineEmailLogin) finishLogin(ctx context.Context, res *line.LoginResult) (*bridgev2.LoginStep, error) {
