@@ -24,6 +24,7 @@ func IsNoUsableE2EEPublicKey(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "missing fields (pub=false keyID=-1") ||
 		strings.Contains(msg, "missing fields (pub=false keyID=0") ||
+		strings.Contains(strings.ToLower(msg), "member settings off") ||
 		(strings.Contains(msg, "\"allowedTypes\":[]") && strings.Contains(msg, "\"specVersion\":-1"))
 }
 
@@ -81,6 +82,14 @@ func parseE2EEGroupKeyError(method, message string, rawData json.RawMessage) err
 	talk := parseTalkExceptionData(rawData)
 	if isNoUsableE2EEGroupKeyTalkException(message, talk) {
 		return fmt.Errorf("%w: %s", ErrNoUsableE2EEGroupKey, talk.Reason)
+	}
+	return fmt.Errorf("%s failed: %s", method, message)
+}
+
+func parseE2EEPublicKeyError(method, message string, rawData json.RawMessage) error {
+	talk := parseTalkExceptionData(rawData)
+	if isNoUsableE2EEGroupKeyTalkException(message, talk) {
+		return fmt.Errorf("%w: %s", ErrNoUsableE2EEPublicKey, talk.Reason)
 	}
 	return fmt.Errorf("%s failed: %s", method, message)
 }

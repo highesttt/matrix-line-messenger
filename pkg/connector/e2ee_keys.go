@@ -43,6 +43,7 @@ func (lc *LineClient) fetchAndUnwrapGroupKey(ctx context.Context, chatMid string
 	if sharedKey == nil {
 		return fmt.Errorf("no group shared key returned for %s", chatMid)
 	}
+	lc.cacheGroupPeerKeys(ctx, client, chatMid)
 
 	lc.UserLogin.Bridge.Log.Debug().
 		Str("chat_mid", chatMid).
@@ -71,6 +72,38 @@ func (lc *LineClient) fetchAndUnwrapGroupKey(ctx context.Context, chatMid string
 		Msg("Unwrapped group shared key")
 
 	return nil
+}
+
+func (lc *LineClient) cacheGroupPeerKeys(ctx context.Context, client *line.Client, chatMid string) {
+	if lc.peerKeys == nil {
+		lc.peerKeys = make(map[string]peerKeyInfo)
+	}
+	keys, err := client.GetLastE2EEPublicKeys(chatMid)
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
+			client = line.NewClient(lc.AccessToken)
+			keys, err = client.GetLastE2EEPublicKeys(chatMid)
+		}
+	}
+	if err != nil {
+		if line.IsNoUsableE2EEPublicKey(err) || line.IsNoUsableE2EEGroupKey(err) {
+			lc.markGroupNoE2EE(chatMid)
+		}
+		lc.UserLogin.Bridge.Log.Debug().Err(err).Str("chat_mid", chatMid).Msg("Failed to fetch group member E2EE public keys")
+		return
+	}
+	for mid, key := range keys {
+		keyID, err := key.KeyID.Int64()
+		if err != nil {
+			continue
+		}
+		pk := peerKeyInfo{raw: int(keyID), pub: key.PublicKey}
+		lc.peerKeys[mid] = pk
+		if lc.E2EE != nil {
+			lc.E2EE.RegisterPeerPublicKey(pk.raw, pk.pub)
+		}
+	}
+	lc.UserLogin.Bridge.Log.Debug().Str("chat_mid", chatMid).Int("keys", len(keys)).Msg("Cached group member E2EE public keys")
 }
 
 func (lc *LineClient) ensurePeerKey(_ context.Context, mid string) (int, string, error) {

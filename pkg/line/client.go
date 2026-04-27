@@ -20,6 +20,7 @@ import (
 
 const (
 	BaseURL          = "https://line-chrome-gw.line-apps.com/api/talk/thrift/Talk"
+	QRLoginBaseURL   = "https://line-chrome-gw.line-apps.com/api/talk/thrift/LoginQrCode"
 	ExtensionVersion = "3.7.2"
 	UserAgent        = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
 )
@@ -49,17 +50,24 @@ func (c *Client) Login(email, pass, certificate string) (*LoginResult, error) {
 		return nil, fmt.Errorf("failed to encrypt password: %w", err)
 	}
 
-	// 3. Generate E2EE Secret
-	secretRes, err := secret.GenerateSecret()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate e2ee secret: %w", err)
-	}
-
-	// 4. LoginV2
-	// Identifier is KeyName when using RSA; certificate allows skipping PIN verification
+	// 3. LoginV2
+	// With a trusted certificate, Chrome uses type 0 without the E2EE secret and
+	// receives tokens immediately. Without one, use type 2 to trigger PIN/E2EE.
 	noE2EE := false
-	respBytes, err := c.LoginV2(rsaKey.KeyName, encryptedPass, certificate, secretRes.Secret)
-	if err != nil && isLoginNotSupported(err) {
+	var secretPin string
+	var respBytes []byte
+	var loginErr error
+	if certificate != "" {
+		respBytes, loginErr = c.LoginV2WithType(0, rsaKey.KeyName, encryptedPass, certificate, "")
+	} else {
+		secretRes, err := secret.GenerateSecret()
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate e2ee secret: %w", err)
+		}
+		secretPin = secretRes.Pin
+		respBytes, loginErr = c.LoginV2(rsaKey.KeyName, encryptedPass, "", secretRes.Secret)
+	}
+	if loginErr != nil && isLoginNotSupported(loginErr) {
 		// LSOFF: E2EE login not supported, retry without secret using fresh RSA key
 		log.Printf("[LINE] E2EE login not supported, retrying without secret (LSOFF)")
 		noE2EE = true
@@ -71,10 +79,10 @@ func (c *Client) Login(email, pass, certificate string) (*LoginResult, error) {
 		if err2 != nil {
 			return nil, fmt.Errorf("failed to encrypt password for LSOFF retry: %w", err2)
 		}
-		respBytes, err = c.LoginV2WithType(0, rsaKey2.KeyName, encryptedPass2, "", "")
+		respBytes, loginErr = c.LoginV2WithType(0, rsaKey2.KeyName, encryptedPass2, "", "")
 	}
-	if err != nil {
-		return nil, fmt.Errorf("login failed: %w", err)
+	if loginErr != nil {
+		return nil, fmt.Errorf("login failed: %w", loginErr)
 	}
 
 	var wrapper struct {
@@ -92,12 +100,15 @@ func (c *Client) Login(email, pass, certificate string) (*LoginResult, error) {
 	if res.PinCode != "" {
 		res.Pin = res.PinCode
 	} else {
-		res.Pin = secretRes.Pin // Store locally for display
+		res.Pin = secretPin // Store locally for display
 	}
 
 	res.NoE2EE = noE2EE
 
-	if res.AuthToken != "" {
+	if res.TokenV3IssueResult != nil && res.TokenV3IssueResult.AccessToken != "" {
+		res.AuthToken = res.TokenV3IssueResult.AccessToken
+		c.AccessToken = res.TokenV3IssueResult.AccessToken
+	} else if res.AuthToken != "" {
 		c.AccessToken = res.AuthToken
 	}
 	return &res, nil
@@ -374,9 +385,19 @@ func (c *Client) ConfirmE2EELogin(verifier, serverPublicKeyB64, encryptedKeyChai
 	return nil
 }
 
+type hmacPostOptions struct {
+	includeLineApplication bool
+	sessionID              string
+	longPollingTimeout     string
+}
+
 // postWithHMAC is a small helper for non-standard RPC endpoints that still expect
 // the same headers and HMAC signature as the Talk endpoints.
 func (c *Client) postWithHMAC(fullURL string, body []byte) ([]byte, error) {
+	return c.postWithHMACOptions(fullURL, body, hmacPostOptions{includeLineApplication: true})
+}
+
+func (c *Client) postWithHMACOptions(fullURL string, body []byte, opts hmacPostOptions) ([]byte, error) {
 	req, err := http.NewRequest("POST", fullURL, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -385,8 +406,16 @@ func (c *Client) postWithHMAC(fullURL string, body []byte) ([]byte, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("x-line-chrome-version", ExtensionVersion)
-	req.Header.Set("x-line-application", "CHROMEOS\t3.7.2\tChrome_OS")
+	if opts.includeLineApplication {
+		req.Header.Set("x-line-application", "CHROMEOS\t3.7.2\tChrome_OS")
+	}
 	req.Header.Set("x-lal", "en_US")
+	if opts.sessionID != "" {
+		req.Header.Set("X-Line-Session-ID", opts.sessionID)
+	}
+	if opts.longPollingTimeout != "" {
+		req.Header.Set("X-LST", opts.longPollingTimeout)
+	}
 	if c.AccessToken != "" {
 		req.Header.Set("x-line-access", c.AccessToken)
 		req.Header.Set("Cookie", fmt.Sprintf("lct=%s", c.AccessToken))
