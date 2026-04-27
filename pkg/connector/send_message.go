@@ -593,6 +593,36 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 	lc.reqSeqMu.Unlock()
 
 	sentMsg, err := client.SendMessage(int64(reqSeq), lineMsg)
+	if err != nil && isGroup && !plainText && line.IsNoUsableE2EEGroupKey(err) {
+		lc.markGroupNoE2EE(portalMid)
+		lc.UserLogin.Bridge.Log.Info().
+			Err(err).
+			Str("chat_mid", portalMid).
+			Msg("Encrypted group send rejected, retrying as plain text")
+
+		plainText = true
+		delete(contentMetadata, "e2eeVersion")
+		delete(contentMetadata, "OID")
+		delete(contentMetadata, "SID")
+		delete(contentMetadata, "ENC_KM")
+
+		lineMsg.Chunks = nil
+		lineMsg.ContentMetadata = contentMetadata
+		if contentType == int(ContentText) {
+			lineMsg.Text = msg.Content.Body
+			lineMsg.HasContent = false
+		} else {
+			if plainMediaData == nil {
+				plainMediaData = originalMediaData
+			}
+			if plainThumbData == nil {
+				plainThumbData = originalThumbData
+			}
+			lineMsg.HasContent = true
+		}
+
+		sentMsg, err = client.SendMessage(int64(reqSeq), lineMsg)
+	}
 
 	// LINE rejects some file types from the Chrome Extension client.
 	// Retry by wrapping the file in a ZIP archive (matching Chrome Extension behavior).
