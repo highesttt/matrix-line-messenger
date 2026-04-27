@@ -491,9 +491,16 @@ func (r *Runner) ChannelEncryptV2(channelID int, to, from string, senderKeyID, r
 
 // ChannelDecryptV1 decrypts ciphertext with channel v1 (ios).
 // Uses pure Go crypto when a Go channel is available.
-func (r *Runner) ChannelDecryptV1(channelID, senderKeyID, receiverKeyID int, ciphertext string) (string, string, error) {
+func (r *Runner) ChannelDecryptV1(channelID, senderKeyID, receiverKeyID int, ciphertext string) (plaintext string, plaintextB64 string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			plaintext = ""
+			plaintextB64 = ""
+			err = fmt.Errorf("LTSM DecryptV1 panic: %v", recovered)
+		}
+	}()
 
 	ctBytes, err := base64.StdEncoding.DecodeString(ciphertext)
 	if err != nil {
@@ -525,9 +532,16 @@ func (r *Runner) ChannelDecryptV1(channelID, senderKeyID, receiverKeyID int, cip
 
 // ChannelDecryptV2 decrypts ciphertext with channel v2.
 // Uses pure Go crypto when a Go channel is available (V2 is broken in WASM).
-func (r *Runner) ChannelDecryptV2(channelID int, to, from string, senderKeyID, receiverKeyID, contentType int, ciphertext string) (string, string, error) {
+func (r *Runner) ChannelDecryptV2(channelID int, to, from string, senderKeyID, receiverKeyID, contentType int, ciphertext string) (plaintext string, plaintextB64 string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			plaintext = ""
+			plaintextB64 = ""
+			err = fmt.Errorf("LTSM DecryptV2 panic: %v", recovered)
+		}
+	}()
 
 	ctBytes, err := base64.StdEncoding.DecodeString(ciphertext)
 	if err != nil {
