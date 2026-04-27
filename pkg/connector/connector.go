@@ -458,7 +458,7 @@ func linePINStep(stepID, pin string) *bridgev2.LoginStep {
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeDisplayAndWait,
 		StepID:       stepID,
-		Instructions: fmt.Sprintf("Please open the LINE app on your mobile device and enter this PIN code: **%s**\n\nAfter entering the code, click Continue below.", pin),
+		Instructions: fmt.Sprintf("Please open the LINE app on your mobile device and enter this PIN code: %s", pin),
 		DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{
 			Type: bridgev2.LoginDisplayTypeNothing,
 		},
