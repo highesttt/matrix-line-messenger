@@ -329,6 +329,29 @@ func (c *Client) GetLastE2EEGroupSharedKey(chatMid string) (*E2EEGroupSharedKey,
 	return &data, nil
 }
 
+func (c *Client) RegisterE2EEGroupKey(chatMid string, receiverMids []string, receiverKeyIDs []int, encryptedSharedKeys []string) (*E2EEGroupSharedKey, error) {
+	resp, err := c.callRPC("TalkService", "registerE2EEGroupKey", 1, chatMid, receiverMids, receiverKeyIDs, encryptedSharedKeys)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Code != 0 {
+		return nil, parseE2EEGroupKeyError("registerE2EEGroupKey", wrapper.Message, wrapper.Data)
+	}
+	var data E2EEGroupSharedKey
+	if err := json.Unmarshal(wrapper.Data, &data); err != nil {
+		return nil, err
+	}
+	return &data, nil
+}
+
 // NegotiateE2EEPublicKey fetches (or renews) the public key of the person you're talking to (E2EE).
 func (c *Client) NegotiateE2EEPublicKey(mid string) (*E2EEPublicKey, error) {
 	resp, err := c.callRPC("TalkService", "negotiateE2EEPublicKey", mid)

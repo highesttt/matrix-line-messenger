@@ -593,6 +593,25 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 	lc.reqSeqMu.Unlock()
 
 	sentMsg, err := client.SendMessage(int64(reqSeq), lineMsg)
+	if err != nil && isGroup && !plainText && line.IsE2EEGroupKeyMismatch(err) {
+		lc.UserLogin.Bridge.Log.Info().
+			Err(err).
+			Str("chat_mid", portalMid).
+			Msg("Encrypted group send used stale member key, registering refreshed group key")
+		if errRotate := lc.registerAndUnwrapGroupKey(ctx, client, portalMid); errRotate != nil {
+			return nil, fmt.Errorf("failed to refresh group E2EE key after member mismatch: %w", errRotate)
+		}
+		if contentType != int(ContentText) {
+			chunks, err = lc.E2EE.EncryptGroupMessageRaw(portalMid, fromMid, contentType, payload)
+		} else {
+			chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to re-encrypt group message after key refresh: %w", err)
+		}
+		lineMsg.Chunks = chunks
+		sentMsg, err = client.SendMessage(int64(reqSeq), lineMsg)
+	}
 	if err != nil && isGroup && !plainText && line.IsNoUsableE2EEGroupKey(err) {
 		lc.markGroupNoE2EE(portalMid)
 		lc.UserLogin.Bridge.Log.Info().

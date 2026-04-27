@@ -12,6 +12,17 @@ var (
 	ErrNoUsableE2EEGroupKey  = errors.New("no usable E2EE group key")
 )
 
+// IsE2EEGroupKeyMismatch returns true when LINE rejects a group send because
+// the encrypted message used a group key whose member list is stale.
+func IsE2EEGroupKeyMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "\"code\":99") ||
+		strings.Contains(msg, "group key member mismatch")
+}
+
 // IsNoUsableE2EEPublicKey returns true when a peer has Letter Sealing disabled
 // (negotiateE2EEPublicKey returns empty allowedTypes / specVersion -1, or no key data).
 func IsNoUsableE2EEPublicKey(err error) bool {

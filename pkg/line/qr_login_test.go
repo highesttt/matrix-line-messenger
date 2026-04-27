@@ -253,6 +253,58 @@ func TestGetLastE2EEPublicKeysParsesCapturedGroupShape(t *testing.T) {
 	}
 }
 
+func TestRegisterE2EEGroupKeyMatchesCapturedRequestShape(t *testing.T) {
+	rt := &recordingTransport{
+		t: t,
+		responses: []queuedResponse{
+			{status: 200, body: `{"code":0,"message":"OK","data":{"keyVersion":1,"groupKeyId":162718348,"creator":"Ume","creatorKeyId":5747884,"receiver":"Ume","receiverKeyId":5747884,"encryptedSharedKey":"wrapped-self","allowedTypes":[0,1,2,3,14,15],"specVersion":2}}`},
+		},
+	}
+	client := NewClient("access")
+	client.HTTPClient = &http.Client{Transport: rt}
+
+	key, err := client.RegisterE2EEGroupKey(
+		"Cgroup",
+		[]string{"Upeer", "Ume"},
+		[]int{5727582, 5747884},
+		[]string{"wrapped-peer", "wrapped-self"},
+	)
+	if err != nil {
+		t.Fatalf("RegisterE2EEGroupKey returned error: %v", err)
+	}
+	if key.GroupKeyID != 162718348 || key.Creator != "Ume" || key.EncryptedSharedKey != "wrapped-self" {
+		t.Fatalf("key = %#v", key)
+	}
+	if len(rt.requests) != 1 {
+		t.Fatalf("recorded %d requests, want 1", len(rt.requests))
+	}
+	if rt.requests[0].path != "/api/talk/thrift/Talk/TalkService/registerE2EEGroupKey" {
+		t.Fatalf("path = %q", rt.requests[0].path)
+	}
+	wantBody := `[1,"Cgroup",["Upeer","Ume"],[5727582,5747884],["wrapped-peer","wrapped-self"]]`
+	if rt.requests[0].body != wantBody {
+		t.Fatalf("body = %q, want %q", rt.requests[0].body, wantBody)
+	}
+}
+
+func TestGroupE2EEErrorClassificationSeparatesMismatchFromLSOFF(t *testing.T) {
+	memberSettingsOff := errFromString(`API error 400: {"code":10051,"message":"RESPONSE_ERROR","data":{"name":"TalkException","code":98,"reason":"member settings off"}}`)
+	if !IsNoUsableE2EEGroupKey(memberSettingsOff) {
+		t.Fatal("code 98 was not classified as no usable group E2EE key")
+	}
+	if IsE2EEGroupKeyMismatch(memberSettingsOff) {
+		t.Fatal("code 98 was classified as group key mismatch")
+	}
+
+	memberMismatch := errFromString(`API error 400: {"code":10051,"message":"RESPONSE_ERROR","data":{"name":"TalkException","code":99,"reason":"group key member mismatch"}}`)
+	if !IsE2EEGroupKeyMismatch(memberMismatch) {
+		t.Fatal("code 99 was not classified as group key mismatch")
+	}
+	if IsNoUsableE2EEGroupKey(memberMismatch) {
+		t.Fatal("code 99 was classified as no usable group E2EE key")
+	}
+}
+
 func TestParseE2EEPublicKeyRejectsMalformedFallbackData(t *testing.T) {
 	_, err := parseE2EEPublicKey([]byte(`{"publicKey":{"keyId":5747884,"keyData":{"0":"0"}}}`))
 	if err == nil {
@@ -261,4 +313,10 @@ func TestParseE2EEPublicKeyRejectsMalformedFallbackData(t *testing.T) {
 	if !IsNoUsableE2EEPublicKey(err) {
 		t.Fatalf("error = %v, want no usable E2EE public key", err)
 	}
+}
+
+type errFromString string
+
+func (e errFromString) Error() string {
+	return string(e)
 }

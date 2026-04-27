@@ -74,6 +74,75 @@ func (lc *LineClient) fetchAndUnwrapGroupKey(ctx context.Context, chatMid string
 	return nil
 }
 
+func (lc *LineClient) registerAndUnwrapGroupKey(ctx context.Context, client *line.Client, chatMid string) error {
+	if lc.E2EE == nil {
+		return fmt.Errorf("E2EE manager not initialized")
+	}
+	keys, err := client.GetLastE2EEPublicKeys(chatMid)
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
+			client = line.NewClient(lc.AccessToken)
+			keys, err = client.GetLastE2EEPublicKeys(chatMid)
+		} else {
+			return fmt.Errorf("failed to recover token before fetching group member keys: %w", errRecover)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if len(keys) == 0 {
+		return fmt.Errorf("no group member E2EE public keys returned for %s", chatMid)
+	}
+
+	for mid, key := range keys {
+		keyID, err := key.KeyID.Int64()
+		if err != nil {
+			return fmt.Errorf("invalid group member key id for %s: %w", mid, err)
+		}
+		pk := peerKeyInfo{raw: int(keyID), pub: key.PublicKey}
+		if lc.peerKeys == nil {
+			lc.peerKeys = make(map[string]peerKeyInfo)
+		}
+		lc.peerKeys[mid] = pk
+		lc.E2EE.RegisterPeerPublicKey(pk.raw, pk.pub)
+	}
+
+	mids, keyIDs, encryptedKeys, err := lc.E2EE.BuildGroupSharedKeyPayload(chatMid, keys)
+	if err != nil {
+		return err
+	}
+	registered, err := client.RegisterE2EEGroupKey(chatMid, mids, keyIDs, encryptedKeys)
+	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
+		if errRecover := lc.recoverToken(ctx); errRecover == nil {
+			client = line.NewClient(lc.AccessToken)
+			registered, err = client.RegisterE2EEGroupKey(chatMid, mids, keyIDs, encryptedKeys)
+		} else {
+			return fmt.Errorf("failed to recover token before registering group key: %w", errRecover)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if registered == nil {
+		return fmt.Errorf("no group shared key returned after registering %s", chatMid)
+	}
+
+	if _, _, err := lc.ensurePeerKeyByID(ctx, registered.Creator, registered.CreatorKeyID); err != nil {
+		return fmt.Errorf("failed to ensure registered creator key: %w", err)
+	}
+	if _, err := lc.E2EE.UnwrapGroupSharedKey(chatMid, registered); err != nil {
+		return fmt.Errorf("failed to unwrap registered group key: %w", err)
+	}
+
+	lc.clearGroupNoE2EE(chatMid)
+	lc.UserLogin.Bridge.Log.Info().
+		Str("chat_mid", chatMid).
+		Int("members", len(mids)).
+		Int("group_key_id", registered.GroupKeyID).
+		Msg("Registered refreshed group E2EE key")
+	return nil
+}
+
 func (lc *LineClient) cacheGroupPeerKeys(ctx context.Context, client *line.Client, chatMid string) {
 	if lc.peerKeys == nil {
 		lc.peerKeys = make(map[string]peerKeyInfo)
