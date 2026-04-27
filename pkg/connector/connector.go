@@ -417,7 +417,7 @@ func (ll *LineEmailLogin) handleLoginResponse(ctx context.Context, res *line.Log
 			pin = res.PinCode
 		}
 		if pin != "" {
-			instructions = fmt.Sprintf("Open LINE and enter this PIN on your mobile device: %s", pin)
+			instructions = linePINInstructions(pin)
 		}
 
 		// Start polling in background immediately so it's running while the user enters the PIN
@@ -458,11 +458,15 @@ func linePINStep(stepID, pin string) *bridgev2.LoginStep {
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeDisplayAndWait,
 		StepID:       stepID,
-		Instructions: fmt.Sprintf("Please open the LINE app on your mobile device and enter this PIN code: %s", pin),
+		Instructions: linePINInstructions(pin),
 		DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{
 			Type: bridgev2.LoginDisplayTypeNothing,
 		},
 	}
+}
+
+func linePINInstructions(pin string) string {
+	return fmt.Sprintf("Please open the LINE app on your mobile device and enter this PIN code: %s", pin)
 }
 
 func (ll *LineEmailLogin) finishLogin(ctx context.Context, res *line.LoginResult) (*bridgev2.LoginStep, error) {
