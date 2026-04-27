@@ -156,6 +156,8 @@ type LineQRLogin struct {
 
 	pollErr    chan error
 	pollResult chan struct{}
+	pollCancel context.CancelFunc
+	pollMu     sync.Mutex
 }
 
 var _ bridgev2.LoginProcessDisplayAndWait = (*LineQRLogin)(nil)
@@ -179,8 +181,8 @@ func (lq *LineQRLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 		return nil, err
 	}
 	lq.AuthSessionID = sessionID
-	lq.startPoll(func() error {
-		return lq.client.CheckQRCodeVerified(sessionID)
+	lq.startPoll(func(ctx context.Context) error {
+		return lq.client.CheckQRCodeVerifiedContext(ctx, sessionID)
 	})
 
 	return &bridgev2.LoginStep{
@@ -229,8 +231,8 @@ func (lq *LineQRLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {
 			return nil, fmt.Errorf("failed to create QR login PIN: %w", err)
 		}
 		lq.PINRequired = true
-		lq.startPoll(func() error {
-			return lq.client.CheckPinCodeVerified(lq.AuthSessionID)
+		lq.startPoll(func(ctx context.Context) error {
+			return lq.client.CheckPinCodeVerifiedContext(ctx, lq.AuthSessionID)
 		})
 
 		return linePINStep("dev.highest.matrix.line.qr_pin", pin), nil
@@ -239,30 +241,51 @@ func (lq *LineQRLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {
 	return nil, fmt.Errorf("no pending QR login continuation")
 }
 
-func (lq *LineQRLogin) startPoll(fn func() error) {
-	lq.pollErr = make(chan error, 1)
-	lq.pollResult = make(chan struct{}, 1)
+func (lq *LineQRLogin) startPoll(fn func(context.Context) error) {
+	lq.Cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	pollErr := make(chan error, 1)
+	pollResult := make(chan struct{}, 1)
+
+	lq.pollMu.Lock()
+	lq.pollCancel = cancel
+	lq.pollErr = pollErr
+	lq.pollResult = pollResult
+	lq.pollMu.Unlock()
+
 	go func() {
-		if err := fn(); err != nil {
-			lq.pollErr <- err
+		if err := fn(ctx); err != nil {
+			pollErr <- err
 		} else {
-			lq.pollResult <- struct{}{}
+			pollResult <- struct{}{}
 		}
 	}()
 }
 
 func (lq *LineQRLogin) waitForPoll(ctx context.Context) error {
+	lq.pollMu.Lock()
+	pollResult := lq.pollResult
+	pollErr := lq.pollErr
+	lq.pollMu.Unlock()
+
 	select {
-	case <-lq.pollResult:
+	case <-pollResult:
 		return nil
-	case err := <-lq.pollErr:
+	case err := <-pollErr:
 		return err
 	case <-ctx.Done():
+		lq.Cancel()
 		return ctx.Err()
 	}
 }
 
 func (lq *LineQRLogin) Cancel() {
+	lq.pollMu.Lock()
+	defer lq.pollMu.Unlock()
+	if lq.pollCancel != nil {
+		lq.pollCancel()
+		lq.pollCancel = nil
+	}
 }
 
 type LineEmailLogin struct {

@@ -2,6 +2,7 @@ package line
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -389,6 +391,7 @@ type hmacPostOptions struct {
 	includeLineApplication bool
 	sessionID              string
 	longPollingTimeout     string
+	ctx                    context.Context
 }
 
 // postWithHMAC is a small helper for non-standard RPC endpoints that still expect
@@ -398,7 +401,11 @@ func (c *Client) postWithHMAC(fullURL string, body []byte) ([]byte, error) {
 }
 
 func (c *Client) postWithHMACOptions(fullURL string, body []byte, opts hmacPostOptions) ([]byte, error) {
-	req, err := http.NewRequest("POST", fullURL, bytes.NewBuffer(body))
+	ctx := opts.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", fullURL, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -433,7 +440,21 @@ func (c *Client) postWithHMACOptions(fullURL string, body []byte, opts hmacPostO
 	}
 	req.Header.Set("x-hmac", signature)
 
-	resp, err := c.HTTPClient.Do(req)
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	if opts.longPollingTimeout != "" {
+		if timeoutMillis, err := strconv.Atoi(opts.longPollingTimeout); err == nil && timeoutMillis > 0 {
+			timeout := time.Duration(timeoutMillis)*time.Millisecond + 10*time.Second
+			if httpClient.Timeout == 0 || httpClient.Timeout < timeout {
+				copied := *httpClient
+				copied.Timeout = timeout
+				httpClient = &copied
+			}
+		}
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}

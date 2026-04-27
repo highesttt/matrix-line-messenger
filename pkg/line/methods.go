@@ -2,6 +2,7 @@ package line
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -113,7 +114,11 @@ func (c *Client) CreateQRCode(authSessionID string) (*QRCodeResponse, error) {
 }
 
 func (c *Client) CheckQRCodeVerified(authSessionID string) error {
-	return c.checkQRPermitNotice("checkQrCodeVerified", authSessionID, "150000")
+	return c.CheckQRCodeVerifiedContext(context.Background(), authSessionID)
+}
+
+func (c *Client) CheckQRCodeVerifiedContext(ctx context.Context, authSessionID string) error {
+	return c.checkQRPermitNotice(ctx, "checkQrCodeVerified", authSessionID, "150000")
 }
 
 func (c *Client) VerifyCertificate(authSessionID, certificate string) error {
@@ -155,7 +160,11 @@ func (c *Client) CreatePinCode(authSessionID string) (string, error) {
 }
 
 func (c *Client) CheckPinCodeVerified(authSessionID string) error {
-	return c.checkQRPermitNotice("checkPinCodeVerified", authSessionID, "110000")
+	return c.CheckPinCodeVerifiedContext(context.Background(), authSessionID)
+}
+
+func (c *Client) CheckPinCodeVerifiedContext(ctx context.Context, authSessionID string) error {
+	return c.checkQRPermitNotice(ctx, "checkPinCodeVerified", authSessionID, "110000")
 }
 
 func (c *Client) QRCodeLoginV2(authSessionID string) (*LoginResult, error) {
@@ -206,7 +215,7 @@ func (c *Client) QRCodeLoginV2(authSessionID string) (*LoginResult, error) {
 	return &res, nil
 }
 
-func (c *Client) checkQRPermitNotice(method, authSessionID, longPollingTimeout string) error {
+func (c *Client) checkQRPermitNotice(ctx context.Context, method, authSessionID, longPollingTimeout string) error {
 	var wrapper struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
@@ -214,7 +223,7 @@ func (c *Client) checkQRPermitNotice(method, authSessionID, longPollingTimeout s
 	req := struct {
 		AuthSessionID string `json:"authSessionId"`
 	}{AuthSessionID: authSessionID}
-	if err := c.callQRRPC("SecondaryQrCodeLoginPermitNoticeService", method, authSessionID, longPollingTimeout, &wrapper, req); err != nil {
+	if err := c.callQRRPCContext(ctx, "SecondaryQrCodeLoginPermitNoticeService", method, authSessionID, longPollingTimeout, &wrapper, req); err != nil {
 		return err
 	}
 	if wrapper.Code != 0 {
@@ -224,6 +233,10 @@ func (c *Client) checkQRPermitNotice(method, authSessionID, longPollingTimeout s
 }
 
 func (c *Client) callQRRPC(service, method, authSessionID, longPollingTimeout string, out interface{}, args ...interface{}) error {
+	return c.callQRRPCContext(context.Background(), service, method, authSessionID, longPollingTimeout, out, args...)
+}
+
+func (c *Client) callQRRPCContext(ctx context.Context, service, method, authSessionID, longPollingTimeout string, out interface{}, args ...interface{}) error {
 	url := fmt.Sprintf("%s/%s/%s", QRLoginBaseURL, service, method)
 
 	bodyBytes, err := json.Marshal(args)
@@ -235,6 +248,7 @@ func (c *Client) callQRRPC(service, method, authSessionID, longPollingTimeout st
 		includeLineApplication: false,
 		sessionID:              authSessionID,
 		longPollingTimeout:     longPollingTimeout,
+		ctx:                    ctx,
 	})
 	if err != nil {
 		return err
