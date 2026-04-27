@@ -7,9 +7,10 @@ import (
 )
 
 type SecretResult struct {
-	Secret       string `json:"secret"`
-	Pin          string `json:"pin"`
-	PublicKeyHex string `json:"publicKeyHex"`
+	Secret          string `json:"secret"`
+	Pin             string `json:"pin"`
+	PublicKeyHex    string `json:"publicKeyHex"`
+	PublicKeyBase64 string `json:"publicKeyBase64"`
 }
 
 // GenerateSecret performs the E2EE handshake logic using the WASM module via Node.js.
@@ -26,9 +27,10 @@ func GenerateSecret() (*SecretResult, error) {
 	}
 
 	return &SecretResult{
-		Secret:       res.Secret,
-		Pin:          res.Pin,
-		PublicKeyHex: res.PublicKeyHex,
+		Secret:          res.Secret,
+		Pin:             res.Pin,
+		PublicKeyHex:    res.PublicKeyHex,
+		PublicKeyBase64: res.PublicKeyBase64,
 	}, nil
 
 }

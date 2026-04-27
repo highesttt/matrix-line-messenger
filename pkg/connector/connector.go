@@ -18,6 +18,7 @@ import (
 
 	"github.com/highesttt/matrix-line-messenger/pkg/e2ee"
 	"github.com/highesttt/matrix-line-messenger/pkg/line"
+	"github.com/highesttt/matrix-line-messenger/pkg/line/secret"
 )
 
 const (
@@ -169,6 +170,14 @@ func (lq *LineQRLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create QR code: %w", err)
 	}
+	secretRes, err := secret.GenerateSecret()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate QR login e2ee secret: %w", err)
+	}
+	callbackURL, err := line.QRCodeCallbackURLWithE2EESecret(qrCode.CallbackURL, secretRes.PublicKeyBase64)
+	if err != nil {
+		return nil, err
+	}
 	lq.AuthSessionID = sessionID
 	lq.startPoll(func() error {
 		return lq.client.CheckQRCodeVerified(sessionID)
@@ -180,7 +189,7 @@ func (lq *LineQRLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 		Instructions: "Scan this QR code with the LINE mobile app.",
 		DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{
 			Type: bridgev2.LoginDisplayTypeQR,
-			Data: qrCode.CallbackURL,
+			Data: callbackURL,
 		},
 	}, nil
 }

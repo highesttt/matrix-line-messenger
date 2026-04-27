@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -144,6 +145,33 @@ func TestQRCodeLoginFlowMatchesCapturedV372Requests(t *testing.T) {
 	}
 	if rt.requests[4].header.Get("X-Line-Session-ID") != authSessionID || rt.requests[4].header.Get("X-LST") != "110000" {
 		t.Fatalf("PIN verification headers = %#v", rt.requests[4].header)
+	}
+}
+
+func TestQRCodeCallbackURLWithE2EESecretMatchesChromeShape(t *testing.T) {
+	got, err := QRCodeCallbackURLWithE2EESecret(
+		"https://line.me/R/au/lgn/sq/SQ123?existing=1",
+		"abcd+/==",
+	)
+	if err != nil {
+		t.Fatalf("QRCodeCallbackURLWithE2EESecret returned error: %v", err)
+	}
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("failed to parse generated URL: %v", err)
+	}
+	if parsed.Scheme != "https" || parsed.Host != "line.me" || parsed.Path != "/R/au/lgn/sq/SQ123" {
+		t.Fatalf("generated URL changed callback target: %s", got)
+	}
+	query := parsed.Query()
+	if query.Get("existing") != "1" {
+		t.Fatalf("existing query param was not preserved: %s", got)
+	}
+	if query.Get("secret") != "abcd+/==" {
+		t.Fatalf("secret param = %q", query.Get("secret"))
+	}
+	if query.Get("e2eeVersion") != "1" {
+		t.Fatalf("e2eeVersion param = %q", query.Get("e2eeVersion"))
 	}
 }
 
