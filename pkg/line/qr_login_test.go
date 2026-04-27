@@ -52,7 +52,7 @@ func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 }
 
 func TestQRCodeLoginFlowMatchesCapturedV372Requests(t *testing.T) {
-	const authSessionID = "SQ37377a7677724f42777947317a6e62427975464f3345696e3166386a4173306a"
+	const authSessionID = "SQtestsession"
 	rt := &recordingTransport{
 		t: t,
 		responses: []queuedResponse{
@@ -208,7 +208,7 @@ func TestVerifyCertificatePropagatesFreshLoginFailure(t *testing.T) {
 }
 
 func TestEmailPasswordLoginWithCertificateSkipsPIN(t *testing.T) {
-	const certificate = "56f8e2fd3a902f994c42c232892f945a3cd462f98c495f9c7011f4525bc382d6"
+	certificate := strings.Repeat("a", 64)
 	rt := &recordingTransport{
 		t: t,
 		responses: []queuedResponse{
@@ -253,10 +253,11 @@ func TestEmailPasswordLoginWithCertificateSkipsPIN(t *testing.T) {
 }
 
 func TestGetLastE2EEPublicKeysParsesCapturedGroupShape(t *testing.T) {
+	const publicKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
 	rt := &recordingTransport{
 		t: t,
 		responses: []queuedResponse{
-			{status: 200, body: `{"code":0,"message":"OK","data":{"Upeer":{"version":1,"keyId":5808453,"keyData":"HHmKjxMuy73JO13VIg11NwUIYdh7wDa5K4aKuoAxjnY=","createdTime":"1776353631192"}}}`},
+			{status: 200, body: `{"code":0,"message":"OK","data":{"Upeer":{"version":1,"keyId":5808453,"keyData":"` + publicKey + `","createdTime":"1776353631192"}}}`},
 		},
 	}
 	client := NewClient("access")
@@ -270,7 +271,7 @@ func TestGetLastE2EEPublicKeysParsesCapturedGroupShape(t *testing.T) {
 	if key == nil {
 		t.Fatal("missing Upeer key")
 	}
-	if key.PublicKey != "HHmKjxMuy73JO13VIg11NwUIYdh7wDa5K4aKuoAxjnY=" || key.KeyID.String() != "5808453" {
+	if key.PublicKey != publicKey || key.KeyID.String() != "5808453" {
 		t.Fatalf("key = %#v", key)
 	}
 	if len(rt.requests) != 1 {
