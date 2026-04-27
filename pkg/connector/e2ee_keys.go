@@ -9,7 +9,10 @@ import (
 	"github.com/highesttt/matrix-line-messenger/pkg/line"
 )
 
-const noE2EETTL = 1 * time.Hour
+const (
+	noE2EETTL        = 1 * time.Hour
+	groupPeerKeysTTL = 30 * time.Minute
+)
 
 // fetchAndUnwrapGroupKey retrieves a specific group key (or the latest when groupKeyID == 0)
 // and unwraps it so the E2EE manager can encrypt/decrypt group messages.
@@ -78,6 +81,12 @@ func (lc *LineClient) cacheGroupPeerKeys(ctx context.Context, client *line.Clien
 	if lc.peerKeys == nil {
 		lc.peerKeys = make(map[string]peerKeyInfo)
 	}
+	if lc.groupPeerKeys == nil {
+		lc.groupPeerKeys = make(map[string]time.Time)
+	}
+	if checkedAt, ok := lc.groupPeerKeys[chatMid]; ok && time.Since(checkedAt) < groupPeerKeysTTL {
+		return
+	}
 	keys, err := client.GetLastE2EEPublicKeys(chatMid)
 	if err != nil && (lc.isRefreshRequired(err) || lc.isLoggedOut(err)) {
 		if errRecover := lc.recoverToken(ctx); errRecover == nil {
@@ -88,6 +97,7 @@ func (lc *LineClient) cacheGroupPeerKeys(ctx context.Context, client *line.Clien
 	if err != nil {
 		if line.IsNoUsableE2EEPublicKey(err) || line.IsNoUsableE2EEGroupKey(err) {
 			lc.markGroupNoE2EE(chatMid)
+			lc.groupPeerKeys[chatMid] = time.Now()
 		}
 		lc.UserLogin.Bridge.Log.Debug().Err(err).Str("chat_mid", chatMid).Msg("Failed to fetch group member E2EE public keys")
 		return
@@ -103,6 +113,7 @@ func (lc *LineClient) cacheGroupPeerKeys(ctx context.Context, client *line.Clien
 			lc.E2EE.RegisterPeerPublicKey(pk.raw, pk.pub)
 		}
 	}
+	lc.groupPeerKeys[chatMid] = time.Now()
 	lc.UserLogin.Bridge.Log.Debug().Str("chat_mid", chatMid).Int("keys", len(keys)).Msg("Cached group member E2EE public keys")
 }
 

@@ -30,6 +30,7 @@ type LineClient struct {
 	sentReqSeqs map[int]time.Time
 
 	noE2EEGroups   map[string]time.Time // chatMid -> when group E2EE failure was cached
+	groupPeerKeys  map[string]time.Time // chatMid -> when group member E2EE keys were fetched
 	contactCache   map[string]cachedContact
 	mediaFlowCache map[string]cachedMediaFlow
 
