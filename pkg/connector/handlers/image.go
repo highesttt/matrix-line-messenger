@@ -44,6 +44,30 @@ func (h *Handler) ConvertImage(ctx context.Context, portal *bridgev2.Portal, int
 			sid = "m"
 		}
 		if metadataAnimated {
+			if isPlainMedia {
+				imgData, err := c.DownloadOBSOriginal(oid, data.ID, sid)
+				if err == nil {
+					return imgData, nil
+				}
+				h.Log.Debug().
+					Err(err).
+					Str("oid", oid).
+					Str("msg_id", data.ID).
+					Str("sid", sid).
+					Msg("Failed to download animated image original, falling back to standard OBS path")
+				return c.DownloadOBSWithSID(oid, data.ID, sid)
+			}
+
+			imgData, err := c.DownloadOBSWithSID(oid, data.ID, sid)
+			if err == nil {
+				return imgData, nil
+			}
+			h.Log.Debug().
+				Err(err).
+				Str("oid", oid).
+				Str("msg_id", data.ID).
+				Str("sid", sid).
+				Msg("Failed to download encrypted animated image, falling back to original OBS path")
 			return c.DownloadOBSOriginal(oid, data.ID, sid)
 		}
 		if isPlainMedia {
