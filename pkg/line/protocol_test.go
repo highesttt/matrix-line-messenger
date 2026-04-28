@@ -107,6 +107,9 @@ func TestQRCodeLoginFlowMatchesCapturedV372Requests(t *testing.T) {
 	if login.AuthToken != "access" || client.AccessToken != "access" {
 		t.Fatalf("access token was not promoted from tokenV3IssueResult")
 	}
+	if login.TokenV3IssueResult == nil || login.TokenV3IssueResult.RefreshToken != "refresh" {
+		t.Fatalf("refresh token was not preserved from tokenV3IssueResult: %#v", login.TokenV3IssueResult)
+	}
 	if login.LastPrimaryBindTime != "1534608800980" {
 		t.Fatalf("LastPrimaryBindTime = %q", login.LastPrimaryBindTime)
 	}

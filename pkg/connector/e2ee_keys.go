@@ -3,7 +3,10 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
+
+	"maunium.net/go/mautrix/bridgev2"
 
 	"github.com/highesttt/matrix-line-messenger/pkg/e2ee"
 	"github.com/highesttt/matrix-line-messenger/pkg/line"
@@ -193,9 +196,16 @@ func (lc *LineClient) ensurePeerKey(_ context.Context, mid string) (int, string,
 			return cached.raw, cached.pub, nil
 		}
 	}
+	if raw, pub, ok := lc.peerKeyFromKnownLogin(mid, 0); ok {
+		return raw, pub, nil
+	}
 	client := line.NewClient(lc.AccessToken)
 	res, err := client.NegotiateE2EEPublicKey(mid)
 	if err != nil {
+		if raw, pub, ok := lc.peerKeyFromKnownLogin(mid, 0); ok {
+			lc.UserLogin.Bridge.Log.Debug().Err(err).Str("peer", mid).Int("key_id", raw).Msg("Using stored peer public key after LINE lookup failed")
+			return raw, pub, nil
+		}
 		// Cache negative result so we don't keep hitting the API
 		if line.IsNoUsableE2EEPublicKey(err) {
 			lc.peerKeys[mid] = peerKeyInfo{noE2EE: true, checkedAt: time.Now()}
@@ -247,11 +257,18 @@ func (lc *LineClient) ensurePeerKeyByID(_ context.Context, mid string, keyID int
 		}
 		return cached.raw, cached.pub, nil
 	}
+	if raw, pub, ok := lc.peerKeyFromKnownLogin(mid, keyID); ok {
+		return raw, pub, nil
+	}
 
 	client := line.NewClient(lc.AccessToken)
 	// keyVersion 1
 	res, err := client.GetE2EEPublicKey(mid, 1, keyID)
 	if err != nil {
+		if raw, pub, ok := lc.peerKeyFromKnownLogin(mid, keyID); ok {
+			lc.UserLogin.Bridge.Log.Debug().Err(err).Str("peer", mid).Int("key_id", raw).Msg("Using stored peer public key after LINE key-id lookup failed")
+			return raw, pub, nil
+		}
 		return 0, "", err
 	}
 
@@ -271,6 +288,43 @@ func (lc *LineClient) ensurePeerKeyByID(_ context.Context, mid string, keyID int
 		lc.E2EE.RegisterPeerPublicKey(pk.raw, pk.pub)
 	}
 	return pk.raw, pk.pub, nil
+}
+
+func (lc *LineClient) peerKeyFromKnownLogin(mid string, keyID int) (int, string, bool) {
+	if lc.UserLogin == nil || lc.UserLogin.User == nil || mid == "" {
+		return 0, "", false
+	}
+	return lc.peerKeyFromLogins(mid, keyID, lc.UserLogin.User.GetUserLogins())
+}
+
+func (lc *LineClient) peerKeyFromLogins(mid string, keyID int, logins []*bridgev2.UserLogin) (int, string, bool) {
+	for _, login := range logins {
+		if login == nil || string(login.ID) != mid {
+			continue
+		}
+		meta, ok := login.Metadata.(*UserLoginMetadata)
+		if !ok || meta == nil || meta.E2EEPublicKey == "" || meta.E2EEKeyID == "" {
+			return 0, "", false
+		}
+		raw, err := parseKeyID(meta.E2EEKeyID)
+		if err != nil || raw == 0 || (keyID != 0 && raw != keyID) {
+			return 0, "", false
+		}
+		pk := peerKeyInfo{raw: raw, pub: meta.E2EEPublicKey}
+		if lc.peerKeys == nil {
+			lc.peerKeys = make(map[string]peerKeyInfo)
+		}
+		lc.peerKeys[mid] = pk
+		if lc.E2EE != nil {
+			lc.E2EE.RegisterPeerPublicKey(pk.raw, pk.pub)
+		}
+		return pk.raw, pk.pub, true
+	}
+	return 0, "", false
+}
+
+func parseKeyID(raw string) (int, error) {
+	return strconv.Atoi(raw)
 }
 
 func (lc *LineClient) ensurePeerKeyForMessage(ctx context.Context, msg *line.Message) {

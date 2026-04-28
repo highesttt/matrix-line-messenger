@@ -95,6 +95,17 @@ type UserLoginMetadata struct {
 	ExportedKeyMap    map[string]string `json:"exported_key_map,omitempty"`
 }
 
+func (meta *UserLoginMetadata) CopyFrom(other any) {
+	if meta == nil {
+		return
+	}
+	otherMeta, ok := other.(*UserLoginMetadata)
+	if !ok || otherMeta == nil {
+		return
+	}
+	*meta = *otherMeta
+}
+
 func (lc *LineConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin) error {
 	meta := login.Metadata.(*UserLoginMetadata)
 	login.Client = &LineClient{
@@ -536,10 +547,12 @@ func finishLineLogin(ctx context.Context, user *bridgev2.User, email, password s
 		Metadata:   meta,
 	}, &bridgev2.NewLoginParams{
 		LoadUserLogin: func(ctx context.Context, login *bridgev2.UserLogin) error {
+			login.Metadata = meta
 			login.Client = &LineClient{
 				UserLogin:    login,
 				AccessToken:  token,
 				RefreshToken: refreshToken,
+				Mid:          profile.Mid,
 				HTTPClient:   &http.Client{Timeout: 10 * time.Second},
 			}
 			return nil
@@ -547,6 +560,16 @@ func finishLineLogin(ctx context.Context, user *bridgev2.User, email, password s
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create user login: %w", err)
+	}
+	if savedMeta, ok := ul.Metadata.(*UserLoginMetadata); ok {
+		savedMeta.AccessToken = token
+		savedMeta.RefreshToken = refreshToken
+		if savedMeta.Mid == "" {
+			savedMeta.Mid = profile.Mid
+		}
+		if err := ul.Save(ctx); err != nil {
+			ul.Bridge.Log.Warn().Err(err).Str("login_id", string(ul.ID)).Msg("Failed to persist login metadata after login")
+		}
 	}
 
 	go ul.Client.Connect(context.Background())

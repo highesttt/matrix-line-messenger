@@ -173,15 +173,36 @@ func (lc *LineClient) Connect(ctx context.Context) {
 			lc.Mid = meta.Mid
 		}
 	}
-	if lc.AccessToken == "" {
-		if err := lc.tryLogin(ctx); err != nil {
-			lc.UserLogin.BridgeState.Send(status.BridgeState{
-				StateEvent: status.StateBadCredentials,
-				Error:      "line-login-failed",
-				Message:    err.Error(),
-			})
-			return
+	if lc.RefreshToken == "" {
+		if meta, ok := lc.UserLogin.Metadata.(*UserLoginMetadata); ok {
+			lc.RefreshToken = meta.RefreshToken
 		}
+	}
+	if lc.AccessToken == "" {
+		if lc.RefreshToken != "" {
+			if err := lc.refreshAndSave(ctx); err != nil {
+				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to refresh missing access token")
+			}
+		}
+		if lc.AccessToken == "" {
+			if err := lc.tryLogin(ctx); err != nil {
+				lc.UserLogin.BridgeState.Send(status.BridgeState{
+					StateEvent: status.StateBadCredentials,
+					Error:      "line-login-failed",
+					Message:    err.Error(),
+				})
+				return
+			}
+		}
+	}
+
+	if lc.AccessToken == "" {
+		lc.UserLogin.BridgeState.Send(status.BridgeState{
+			StateEvent: status.StateBadCredentials,
+			Error:      "line-login-failed",
+			Message:    "no access token available after login recovery",
+		})
+		return
 	}
 
 	// Verify the token is still valid before proceeding
