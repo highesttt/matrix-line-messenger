@@ -26,6 +26,7 @@
 
 # Internal Test files
 *_test.go
+!pkg/**/*_test.go
 
 # internal tools
 /tools

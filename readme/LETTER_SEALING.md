@@ -33,9 +33,21 @@ This note summarizes what issue [#42](https://github.com/highesttt/matrix-line-m
 
 ## How it works
 
-### Login path
+### Login paths
 
-The bridge supports two login flows, selected automatically based on whether the LINE account has Letter Sealing enabled:
+The bridge supports QR code login and email/password login.
+
+**QR code login (primary):**
+1. The bridge creates a QR login session and QR callback URL.
+2. Before displaying the QR, it appends a Curve25519 public key as `secret` with `e2eeVersion=1`, matching the LINE Chrome Extension.
+3. The user scans the QR code with LINE mobile.
+4. If the stored LINE certificate is valid, the PIN step is skipped. Otherwise, the bridge displays a 6-digit PIN for the user to enter on mobile.
+5. `qrCodeLoginV2` returns access tokens, a refreshed certificate, and E2EE keychain metadata.
+6. The bridge unwraps the encrypted keychain with the matching QR login private key.
+
+**Email/password login (secondary):**
+
+This path is selected manually and then diverges based on whether the LINE account has Letter Sealing enabled:
 
 **LSON accounts (E2EE login):**
 1. `loginV2` with `type: 2` and E2EE `secret` returns a verifier and PIN.
