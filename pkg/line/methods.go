@@ -1,6 +1,8 @@
 package line
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -159,6 +161,29 @@ func (c *Client) GetLastE2EEGroupSharedKey(chatMid string) (*E2EEGroupSharedKey,
 	return &data, nil
 }
 
+func (c *Client) RegisterE2EEGroupKey(chatMid string, receiverMids []string, receiverKeyIDs []int, encryptedSharedKeys []string) (*E2EEGroupSharedKey, error) {
+	resp, err := c.callRPC("TalkService", "registerE2EEGroupKey", 1, chatMid, receiverMids, receiverKeyIDs, encryptedSharedKeys)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Code != 0 {
+		return nil, parseE2EEGroupKeyError("registerE2EEGroupKey", wrapper.Message, wrapper.Data)
+	}
+	var data E2EEGroupSharedKey
+	if err := json.Unmarshal(wrapper.Data, &data); err != nil {
+		return nil, err
+	}
+	return &data, nil
+}
+
 // NegotiateE2EEPublicKey fetches (or renews) the public key of the person you're talking to (E2EE).
 func (c *Client) NegotiateE2EEPublicKey(mid string) (*E2EEPublicKey, error) {
 	resp, err := c.callRPC("TalkService", "negotiateE2EEPublicKey", mid)
@@ -180,143 +205,80 @@ func (c *Client) NegotiateE2EEPublicKey(mid string) (*E2EEPublicKey, error) {
 }
 
 func parseE2EEPublicKey(rawData []byte) (*E2EEPublicKey, error) {
-	var data map[string]any
-	if err := json.Unmarshal(rawData, &data); err != nil {
-		return nil, err
+	var payload e2eePublicKeyPayload
+	dec := json.NewDecoder(bytes.NewReader(rawData))
+	dec.UseNumber()
+	if err := dec.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("%w: failed to parse key data: %w", ErrNoUsableE2EEPublicKey, err)
 	}
 
-	var findString func(any) string
-	findString = func(v any) string {
-		switch t := v.(type) {
-		case string:
-			return t
-		case map[string]any:
-			for _, val := range t {
-				if s := findString(val); s != "" {
-					return s
-				}
-			}
-		case []any:
-			for _, val := range t {
-				if s := findString(val); s != "" {
-					return s
-				}
-			}
+	key := payload.PublicKey
+	if key == nil && (payload.KeyData != "" || payload.KeyID != "") {
+		key = &e2eePublicKeyData{
+			Version:     payload.Version,
+			KeyID:       payload.KeyID,
+			KeyData:     payload.KeyData,
+			CreatedTime: payload.CreatedTime,
 		}
-		return ""
+	}
+	if key == nil || key.KeyData == "" || key.KeyID == "" {
+		return nil, fmt.Errorf("%w: missing fields (pub=%t keyID=%s raw=%s)", ErrNoUsableE2EEPublicKey, key != nil && key.KeyData != "", keyIDString(key), string(rawData))
+	}
+	if err := validateE2EEPublicKeyData(key.KeyData); err != nil {
+		return nil, fmt.Errorf("%w: invalid key data: %w", ErrNoUsableE2EEPublicKey, err)
 	}
 
-	var findInt64 func(any) int64
-	findInt64 = func(v any) int64 {
-		switch t := v.(type) {
-		case json.Number:
-			if n, err := t.Int64(); err == nil {
-				return n
-			}
-		case float64:
-			return int64(t)
-		case int64:
-			return t
-		case int:
-			return int64(t)
-		case string:
-			if t == "" {
-				return 0
-			}
-			if n, err := strconv.ParseInt(t, 10, 64); err == nil {
-				return n
-			}
-		case map[string]any:
-			for _, val := range t {
-				if n := findInt64(val); n != 0 {
-					return n
-				}
-			}
-		case []any:
-			for _, val := range t {
-				if n := findInt64(val); n != 0 {
-					return n
-				}
-			}
-		}
-		return 0
-	}
-
-	var findBool func(any) bool
-	findBool = func(v any) bool {
-		switch t := v.(type) {
-		case bool:
-			return t
-		case string:
-			b, err := strconv.ParseBool(t)
-			return err == nil && b
-		case map[string]any:
-			for _, val := range t {
-				if b := findBool(val); b {
-					return true
-				}
-			}
-		case []any:
-			for _, val := range t {
-				if b := findBool(val); b {
-					return true
-				}
-			}
-		}
-		return false
-	}
-
-	pub := ""
-	keyID := int64(0)
-	if pk, ok := data["publicKey"].(map[string]any); ok {
-		// Try keyData as a direct string first (most common LINE response shape).
-		switch kd := pk["keyData"].(type) {
-		case string:
-			pub = kd
-		case map[string]any:
-			// Nested object — check known field names deterministically before
-			// falling back to the non-deterministic recursive findString.
-			for _, name := range []string{"keyData", "publicKey", "key", "data", "value"} {
-				if s, ok := kd[name].(string); ok && s != "" {
-					pub = s
-					break
-				}
-			}
-			if pub == "" {
-				pub = findString(kd)
-			}
-		default:
-			// keyData is absent or an unexpected type; findString on the whole pk object.
-			pub = findString(pk)
-		}
-		if keyID == 0 {
-			keyID = findInt64(pk["keyId"])
-		}
-	}
-	if pub == "" {
-		pub = findString(data["publicKey"])
-	}
-	if pub == "" {
-		pub = findString(data)
-	}
-	if keyID == 0 {
-		keyID = findInt64(data["keyId"])
-	}
-	if keyID == 0 {
-		keyID = findInt64(data)
-	}
-	if pub == "" || keyID == 0 {
-		return nil, fmt.Errorf("%w: missing fields (pub=%t keyID=%d raw=%s)", ErrNoUsableE2EEPublicKey, pub != "", keyID, string(rawData))
+	keyID, err := key.KeyID.Int64()
+	if err != nil || keyID == 0 {
+		return nil, fmt.Errorf("%w: invalid key ID %q", ErrNoUsableE2EEPublicKey, key.KeyID)
 	}
 
 	return &E2EEPublicKey{
 		KeyID:        json.Number(strconv.FormatInt(keyID, 10)),
-		PublicKey:    pub,
-		E2EEVersion:  int(findInt64(data["e2eeVersion"])),
-		Expired:      findBool(data["expired"]),
-		CreatedTime:  json.Number(strconv.FormatInt(findInt64(data["createdTime"]), 10)),
-		RenewalCount: int(findInt64(data["renewalCount"])),
+		PublicKey:    key.KeyData,
+		E2EEVersion:  payload.E2EEVersion,
+		Expired:      payload.Expired,
+		CreatedTime:  key.CreatedTime,
+		RenewalCount: payload.RenewalCount,
 	}, nil
+}
+
+type e2eePublicKeyPayload struct {
+	AllowedTypes []int              `json:"allowedTypes"`
+	SpecVersion  int                `json:"specVersion"`
+	PublicKey    *e2eePublicKeyData `json:"publicKey"`
+	Version      int                `json:"version"`
+	KeyID        json.Number        `json:"keyId"`
+	KeyData      string             `json:"keyData"`
+	CreatedTime  json.Number        `json:"createdTime"`
+	E2EEVersion  int                `json:"e2eeVersion"`
+	Expired      bool               `json:"expired"`
+	RenewalCount int                `json:"renewalCount"`
+}
+
+type e2eePublicKeyData struct {
+	Version     int         `json:"version"`
+	KeyID       json.Number `json:"keyId"`
+	KeyData     string      `json:"keyData"`
+	CreatedTime json.Number `json:"createdTime"`
+}
+
+func keyIDString(key *e2eePublicKeyData) string {
+	if key == nil {
+		return "0"
+	}
+	return key.KeyID.String()
+}
+
+func validateE2EEPublicKeyData(keyData string) error {
+	decoded, err := base64.StdEncoding.DecodeString(keyData)
+	if err != nil {
+		return err
+	}
+	if len(decoded) != 32 {
+		return fmt.Errorf("decoded key length %d, want 32", len(decoded))
+	}
+	return nil
 }
 
 func (c *Client) GetE2EEPublicKey(mid string, keyVersion, keyID int) (*E2EEPublicKey, error) {
@@ -337,6 +299,38 @@ func (c *Client) GetE2EEPublicKey(mid string, keyVersion, keyID int) (*E2EEPubli
 	}
 
 	return parseE2EEPublicKey(wrapper.Data)
+}
+
+func (c *Client) GetLastE2EEPublicKeys(chatMid string) (map[string]*E2EEPublicKey, error) {
+	resp, err := c.callRPC("TalkService", "getLastE2EEPublicKeys", chatMid)
+	if err != nil {
+		return nil, err
+	}
+	var wrapper struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &wrapper); err != nil {
+		return nil, err
+	}
+	if wrapper.Code != 0 {
+		return nil, parseE2EEPublicKeyError("getLastE2EEPublicKeys", wrapper.Message, wrapper.Data)
+	}
+
+	var rawKeys map[string]json.RawMessage
+	if err := json.Unmarshal(wrapper.Data, &rawKeys); err != nil {
+		return nil, err
+	}
+	keys := make(map[string]*E2EEPublicKey, len(rawKeys))
+	for mid, rawKey := range rawKeys {
+		key, err := parseE2EEPublicKey(rawKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse E2EE public key for %s: %w", mid, err)
+		}
+		keys[mid] = key
+	}
+	return keys, nil
 }
 
 func (c *Client) SendMessage(reqSeq int64, msg *Message) (*Message, error) {
