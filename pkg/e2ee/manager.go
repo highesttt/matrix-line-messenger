@@ -1,6 +1,7 @@
 package e2ee
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -38,6 +39,55 @@ type Manager struct {
 	groupSessionChannels map[string]map[int]map[int]int
 
 	latestGroupKey map[string]int // chatMid -> latest groupKeyId
+}
+
+func (m *Manager) BuildGroupSharedKeyPayload(chatMid string, memberKeys map[string]*line.E2EEPublicKey) ([]string, []int, []string, error) {
+	sharedKey := make([]byte, 32)
+	if _, err := rand.Read(sharedKey); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to generate group shared key: %w", err)
+	}
+
+	mids := make([]string, 0, len(memberKeys))
+	for mid := range memberKeys {
+		mids = append(mids, mid)
+	}
+	sort.Strings(mids)
+
+	myKeyID := 0
+	m.mu.Lock()
+	if m.myKeyID != 0 {
+		myKeyID = m.myKeyID
+	}
+	m.mu.Unlock()
+	if myKeyID == 0 {
+		return nil, nil, nil, fmt.Errorf("my key not loaded")
+	}
+
+	keyIDs := make([]int, 0, len(mids))
+	encryptedKeys := make([]string, 0, len(mids))
+	for _, mid := range mids {
+		key := memberKeys[mid]
+		if key == nil {
+			return nil, nil, nil, fmt.Errorf("missing member key for %s", mid)
+		}
+		rawKeyID, err := key.KeyID.Int64()
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("invalid member key id for %s: %w", mid, err)
+		}
+		m.RegisterPeerPublicKey(int(rawKeyID), key.PublicKey)
+		chanID, err := m.runner.ChannelCreate(myKeyID, key.PublicKey)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to create group key channel for %s: %w", mid, err)
+		}
+		encryptedKey, err := m.runner.ChannelEncryptV1(chanID, string(sharedKey))
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to wrap group shared key for %s: %w", mid, err)
+		}
+		keyIDs = append(keyIDs, int(rawKeyID))
+		encryptedKeys = append(encryptedKeys, encryptedKey)
+	}
+
+	return mids, keyIDs, encryptedKeys, nil
 }
 
 func NewManager() (*Manager, error) {

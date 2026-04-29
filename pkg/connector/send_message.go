@@ -92,11 +92,9 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 
 	// For plain media: we send the message first, then upload media to r/talk/m/{msgId}.
 	var plainMediaData []byte // raw media data to upload after sending
-	var plainThumbData []byte // raw thumbnail data to upload after sending
 
 	// For group chats, save original data in case E2EE encryption fails and we fall back to plain.
 	var originalMediaData []byte
-	var originalThumbData []byte
 
 	// For file uploads, save the raw data so we can retry with ZIP wrapping if LINE rejects
 	// the raw file (some file types require ZIP, others like PDF work directly).
@@ -138,11 +136,10 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			// Plain media: save data for post-send upload to r/talk/m/{msgId}
 			plainMediaData = data
 
-			thumbnailData, thumbWidth, thumbHeight, err := generateThumbnail(data)
+			_, thumbWidth, thumbHeight, err := generateThumbnail(data)
 			if err != nil {
 				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to generate thumbnail, continuing without it")
 			} else {
-				plainThumbData = thumbnailData
 				mediaThumbInfo := map[string]interface{}{
 					"width":  thumbWidth,
 					"height": thumbHeight,
@@ -177,9 +174,6 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			// Save original data for potential group E2EE fallback
 			if isGroup {
 				originalMediaData = data
-				if thumbData, _, _, tErr := generateThumbnail(data); tErr == nil {
-					originalThumbData = thumbData
-				}
 			}
 
 			uploadData, keyMaterialB64, err := lc.encryptFileData(data)
@@ -316,6 +310,100 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			return nil, fmt.Errorf("failed to download video from matrix: %w", err)
 		}
 
+		// Beeper sends GIFs as MsgVideo with fi.mau.gif=true — treat as animated image
+		if msg.Content.Info != nil && msg.Content.Info.MauGIF {
+			// Convert video (mp4/webm) to actual GIF format for LINE
+			if !isAnimatedGif(data) {
+				gifData, convErr := convertVideoToGIF(data)
+				if convErr != nil {
+					return nil, fmt.Errorf("failed to convert video to GIF: %w", convErr)
+				}
+				data = gifData
+				lc.UserLogin.Bridge.Log.Info().
+					Int("gif_size", len(data)).
+					Msg("Converted video to GIF for LINE")
+			}
+
+			contentType = int(ContentImage)
+
+			fileName := msg.Content.GetFileName()
+			if fileName == "" {
+				fileName = "image.gif"
+			}
+			contentMetadata["FILE_NAME"] = fileName
+			contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(data))
+			contentMetadata["contentType"] = fmt.Sprintf("%d", ContentImage)
+
+			mediaContentInfo := map[string]interface{}{
+				"category":  "original",
+				"fileSize":  len(data),
+				"extension": "gif",
+				"animated":  true,
+			}
+			if mediaInfoJSON, err := json.Marshal(mediaContentInfo); err == nil {
+				contentMetadata["MEDIA_CONTENT_INFO"] = string(mediaInfoJSON)
+			}
+
+			if plainText {
+				plainMediaData = data
+
+				_, thumbWidth, thumbHeight, err := generateThumbnail(data)
+				if err != nil {
+					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to generate GIF thumbnail dimensions, continuing without it")
+				} else {
+					mediaThumbInfo := map[string]interface{}{
+						"width":  thumbWidth,
+						"height": thumbHeight,
+					}
+					if thumbInfoJSON, err := json.Marshal(mediaThumbInfo); err == nil {
+						contentMetadata["MEDIA_THUMB_INFO"] = string(thumbInfoJSON)
+					}
+				}
+			} else {
+				if isGroup {
+					originalMediaData = data
+				}
+
+				uploadData, keyMaterialB64, err := lc.encryptFileData(data)
+				if err != nil {
+					return nil, fmt.Errorf("failed to encrypt GIF data: %w", err)
+				}
+
+				oid, err := client.UploadOBS(uploadData)
+				if err != nil {
+					return nil, fmt.Errorf("failed to upload GIF to OBS: %w", err)
+				}
+
+				thumbnailData, thumbWidth, thumbHeight, err := generateThumbnail(data)
+				if err != nil {
+					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to generate GIF thumbnail, continuing without it")
+				} else if thumbToUpload, err := encryptThumbnail(thumbnailData, keyMaterialB64); err != nil {
+					lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to encrypt GIF thumbnail, continuing without it")
+				} else {
+					previewOID := fmt.Sprintf("%s__ud-preview", oid)
+					if err := client.UploadOBSWithOID(thumbToUpload, previewOID); err != nil {
+						lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload GIF preview, continuing without it")
+					} else {
+						mediaThumbInfo := map[string]interface{}{
+							"width":  thumbWidth,
+							"height": thumbHeight,
+						}
+						if thumbInfoJSON, err := json.Marshal(mediaThumbInfo); err == nil {
+							contentMetadata["MEDIA_THUMB_INFO"] = string(thumbInfoJSON)
+						}
+					}
+				}
+
+				contentMetadata["OID"] = oid
+				contentMetadata["SID"] = "emi"
+				contentMetadata["ENC_KM"] = keyMaterialB64
+
+				imgPayload := map[string]string{"keyMaterial": keyMaterialB64}
+				payload, _ = json.Marshal(imgPayload)
+			}
+			break
+		}
+
 		contentType = int(ContentVideo)
 		contentMetadata["FILE_SIZE"] = fmt.Sprintf("%d", len(data))
 		contentMetadata["contentType"] = fmt.Sprintf("%d", ContentVideo)
@@ -339,7 +427,6 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 				thumbnailData = thumbBuf.Bytes()
 			}
 			if len(thumbnailData) > 0 {
-				plainThumbData = thumbnailData
 				mediaThumbInfo := map[string]interface{}{
 					"width":  thumbWidth,
 					"height": thumbHeight,
@@ -356,9 +443,6 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 		} else {
 			if isGroup {
 				originalMediaData = data
-				if thumbData, _, _, tErr := extractVideoThumbnail(data); tErr == nil {
-					originalThumbData = thumbData
-				}
 			}
 
 			uploadData, keyMaterialB64, err := lc.encryptVideoData(data)
@@ -518,7 +602,6 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 						delete(contentMetadata, "SID")
 						delete(contentMetadata, "ENC_KM")
 						plainMediaData = originalMediaData
-						plainThumbData = originalThumbData
 					}
 				}
 			}
@@ -593,6 +676,52 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 	lc.reqSeqMu.Unlock()
 
 	sentMsg, err := client.SendMessage(int64(reqSeq), lineMsg)
+	if err != nil && isGroup && !plainText && line.IsE2EEGroupKeyMismatch(err) {
+		lc.UserLogin.Bridge.Log.Info().
+			Err(err).
+			Str("chat_mid", portalMid).
+			Msg("Encrypted group send used stale member key, registering refreshed group key")
+		if errRotate := lc.registerAndUnwrapGroupKey(ctx, client, portalMid); errRotate != nil {
+			return nil, fmt.Errorf("failed to refresh group E2EE key after member mismatch: %w", errRotate)
+		}
+		if contentType != int(ContentText) {
+			chunks, err = lc.E2EE.EncryptGroupMessageRaw(portalMid, fromMid, contentType, payload)
+		} else {
+			chunks, err = lc.E2EE.EncryptGroupMessage(portalMid, fromMid, msg.Content.Body)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to re-encrypt group message after key refresh: %w", err)
+		}
+		lineMsg.Chunks = chunks
+		sentMsg, err = client.SendMessage(int64(reqSeq), lineMsg)
+	}
+	if err != nil && isGroup && !plainText && line.IsNoUsableE2EEGroupKey(err) {
+		lc.markGroupNoE2EE(portalMid)
+		lc.UserLogin.Bridge.Log.Info().
+			Err(err).
+			Str("chat_mid", portalMid).
+			Msg("Encrypted group send rejected, retrying as plain text")
+
+		plainText = true
+		delete(contentMetadata, "e2eeVersion")
+		delete(contentMetadata, "OID")
+		delete(contentMetadata, "SID")
+		delete(contentMetadata, "ENC_KM")
+
+		lineMsg.Chunks = nil
+		lineMsg.ContentMetadata = contentMetadata
+		if contentType == int(ContentText) {
+			lineMsg.Text = msg.Content.Body
+			lineMsg.HasContent = false
+		} else {
+			if plainMediaData == nil {
+				plainMediaData = originalMediaData
+			}
+			lineMsg.HasContent = true
+		}
+
+		sentMsg, err = client.SendMessage(int64(reqSeq), lineMsg)
+	}
 
 	// LINE rejects some file types from the Chrome Extension client.
 	// Retry by wrapping the file in a ZIP archive (matching Chrome Extension behavior).
@@ -673,7 +802,7 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			obsType = "file"
 		}
 
-		if err := client.UploadOBSPlain(plainMediaData, sentMsg.ID, obsType); err != nil {
+		if err := client.UploadOBSPlain(plainMediaData, sentMsg.ID, obsType, contentMetadata["FILE_NAME"]); err != nil {
 			return nil, fmt.Errorf("failed to upload plain media to OBS: %w", err)
 		}
 		lc.UserLogin.Bridge.Log.Info().
@@ -682,12 +811,8 @@ func (lc *LineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Mat
 			Int("media_size", len(plainMediaData)).
 			Msg("Uploaded plain media after sending")
 
-		if plainThumbData != nil {
-			previewID := fmt.Sprintf("%s__ud-preview", sentMsg.ID)
-			if err := client.UploadOBSPlain(plainThumbData, previewID, obsType); err != nil {
-				lc.UserLogin.Bridge.Log.Warn().Err(err).Msg("Failed to upload plain media thumbnail, continuing without it")
-			}
-		}
+		// Skip plain thumbnail upload — LINE generates thumbnails server-side
+		// for media uploaded to the r/talk/m/ endpoint.
 	}
 
 	return &bridgev2.MatrixMessageResponse{

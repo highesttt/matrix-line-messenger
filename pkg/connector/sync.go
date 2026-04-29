@@ -196,6 +196,7 @@ func (lc *LineClient) syncChats(ctx context.Context) {
 		}
 
 		for _, chat := range chatsResp.Chats {
+			lc.cacheGroupPeerKeys(ctx, client, chat.ChatMid)
 			portalKey := networkid.PortalKey{ID: makePortalID(chat.ChatMid), Receiver: lc.UserLogin.ID}
 
 			info := lc.chatToChatInfo(&chat, true)
