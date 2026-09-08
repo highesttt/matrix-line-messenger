@@ -881,23 +881,27 @@ func (c *Client) CreateChat(mids []string, name string, chatType int) (*Chat, er
 
 // GetLastE2EEPublicKeys fetches the latest E2EE public keys for all members of a chat.
 // Returns a map of member MID → {keyId, keyData}.
-func (c *Client) GetLastE2EEPublicKeys(req GetLastE2EEPublicKeysRequest) (map[string]E2EEPeerPublicKey, error) {
-	resp, err := c.callRPC("TalkService", "getLastE2EEPublicKeys", req)
+func (c *Client) GetLastE2EEPublicKeys(chatMid string) (map[string]E2EEPeerPublicKey, error) {
+	resp, err := c.callRPC("TalkService", "getLastE2EEPublicKeys", chatMid)
 	if err != nil {
 		return nil, err
 	}
 	var wrapper struct {
-		Code    int                          `json:"code"`
-		Message string                       `json:"message"`
-		Data    map[string]E2EEPeerPublicKey `json:"data"`
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(resp, &wrapper); err != nil {
 		return nil, fmt.Errorf("failed to parse getLastE2EEPublicKeys response: %w", err)
 	}
 	if wrapper.Code != 0 {
-		return nil, fmt.Errorf("getLastE2EEPublicKeys failed: %s", wrapper.Message)
+		return nil, fmt.Errorf("getLastE2EEPublicKeys failed: %s", resp)
 	}
-	return wrapper.Data, nil
+	var keys map[string]E2EEPeerPublicKey
+	if err := json.Unmarshal(wrapper.Data, &keys); err != nil {
+		return nil, fmt.Errorf("failed to parse group member public keys: %w", err)
+	}
+	return keys, nil
 }
 
 // RegisterE2EEGroupKey registers a shared E2EE group key with the server.
@@ -916,7 +920,7 @@ func (c *Client) RegisterE2EEGroupKey(keyVersion int, chatMid string, members []
 		return fmt.Errorf("failed to parse registerE2EEGroupKey response: %w", err)
 	}
 	if wrapper.Code != 0 {
-		return fmt.Errorf("registerE2EEGroupKey failed: %s", wrapper.Message)
+		return fmt.Errorf("registerE2EEGroupKey failed: %s", resp)
 	}
 	return nil
 }
