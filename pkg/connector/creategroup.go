@@ -47,8 +47,7 @@ func (lc *LineClient) CreateGroup(ctx context.Context, params *bridgev2.GroupCre
 		Int("participants", len(participantMids)).
 		Msg("LINE group chat created")
 
-	// Cache the member list so auto-registration can fall back to it
-	// when GetChats withMembers returns empty data.
+	// Cache the member list for group name generation.
 	groupMembers := make([]string, 0, len(participantMids)+1)
 	groupMembers = append(groupMembers, lc.Mid)
 	groupMembers = append(groupMembers, participantMids...)
@@ -160,14 +159,17 @@ func (lc *LineClient) registerGroupKeyWithCrypto(ctx context.Context, chatMid st
 			return fmt.Errorf("getLastE2EEPublicKeys failed: %w", err)
 		}
 		if len(pubKeys) == 0 {
-			return fmt.Errorf("no registration members returned for group key")
+			return fmt.Errorf("%w: no registration members returned for group key", line.ErrNoUsableE2EEGroupKey)
 		}
 		if _, ok := pubKeys[lc.Mid]; !ok {
-			return fmt.Errorf("group key registration members do not include caller")
+			return fmt.Errorf("%w: group key registration members do not include caller", line.ErrNoUsableE2EEGroupKey)
 		}
 		for mid, pk := range pubKeys {
-			if !isUserMID(mid) || pk.KeyID <= 0 || pk.KeyData == "" {
-				return fmt.Errorf("incomplete E2EE group member public key")
+			if !isUserMID(mid) {
+				return fmt.Errorf("invalid E2EE group member MID")
+			}
+			if pk.KeyID <= 0 || pk.KeyData == "" {
+				return fmt.Errorf("%w: incomplete E2EE group member public key", line.ErrNoUsableE2EEGroupKey)
 			}
 		}
 
