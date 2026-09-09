@@ -351,12 +351,6 @@ type E2EEPeerPublicKey struct {
 	KeyData string `json:"keyData"`
 }
 
-// GetLastE2EEPublicKeysRequest is the request body for getLastE2EEPublicKeys.
-type GetLastE2EEPublicKeysRequest struct {
-	ChatMid string   `json:"chatMid"`
-	Members []string `json:"members"`
-}
-
 type CreateChatRequest struct {
 	ReqSeq         int      `json:"reqSeq"`
 	Type           int      `json:"type"`

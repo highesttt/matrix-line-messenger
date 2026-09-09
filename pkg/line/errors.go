@@ -150,6 +150,30 @@ type talkExceptionData struct {
 	Reason  string `json:"reason"`
 }
 
+// IsE2EEGroupMemberMismatch identifies a rejected registration that needs a
+// fresh server member/key snapshot, not a plaintext fallback.
+func IsE2EEGroupMemberMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	start := strings.IndexByte(msg, '{')
+	if start < 0 {
+		return false
+	}
+	var response struct {
+		Code    int               `json:"code"`
+		Message string            `json:"message"`
+		Data    talkExceptionData `json:"data"`
+	}
+	if json.NewDecoder(strings.NewReader(msg[start:])).Decode(&response) != nil {
+		return false
+	}
+	return response.Code == 10051 && strings.EqualFold(response.Message, "RESPONSE_ERROR") &&
+		strings.EqualFold(response.Data.Name, "TalkException") && response.Data.Code == 99 &&
+		strings.EqualFold(strings.TrimSpace(response.Data.Reason), "member count mismatch")
+}
+
 // IsGroupKeyNotRegisteredError returns true when SendMessage returns code 99
 // "group key is not registered". This means a group key must be registered before
 // sending any message (even plain text) to this group.

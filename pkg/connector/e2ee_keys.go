@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"maunium.net/go/mautrix/bridgev2/networkid"
-
 	"github.com/highesttt/matrix-line-messenger/pkg/e2ee"
 	"github.com/highesttt/matrix-line-messenger/pkg/line"
 )
@@ -209,154 +207,10 @@ func (lc *LineClient) cacheGroupMemberMIDs(chatMid string, mids []string) {
 	lc.groupMemberCache[chatMid] = append([]string(nil), mids...)
 }
 
-func joinedGroupMemberMIDs(group *line.GroupExtra, ownMID string) ([]string, bool) {
-	seen := make(map[string]struct{})
-	if group != nil {
-		for mid := range group.MemberMids {
-			if isUserMID(mid) {
-				seen[mid] = struct{}{}
-			}
-		}
-	}
-	if isUserMID(ownMID) {
-		seen[ownMID] = struct{}{}
-	}
-
-	mids := make([]string, 0, len(seen))
-	for mid := range seen {
-		mids = append(mids, mid)
-	}
-	return mids, group != nil && len(group.InviteeMids) > 0
-}
-
-// getChatMemberMIDs fetches joined member MIDs for a group chat via GetChats.
-// Pending invitees are deliberately excluded: LINE validates group keys against the
-// current joined-member set and rejects keys that include invitees.
-func (lc *LineClient) getChatMemberMIDs(ctx context.Context, chatMid string) ([]string, bool, error) {
-	_, chats, err := callLineResult(lc, ctx, func(client *line.Client) (*line.GetChatsResponse, error) {
-		return client.GetChats([]string{chatMid}, true, true)
-	})
-	if err != nil {
-		return nil, false, fmt.Errorf("getChats failed for %s: %w", chatMid, err)
-	}
-	if len(chats.Chats) == 0 {
-		return nil, false, fmt.Errorf("chat %s not found", chatMid)
-	}
-	chat := chats.Chats[0]
-	if chat.Extra.GroupExtra == nil {
-		return nil, false, fmt.Errorf("chat %s has no group extra", chatMid)
-	}
-	group := chat.Extra.GroupExtra
-	mids, hasPendingInvitees := joinedGroupMemberMIDs(group, lc.Mid)
-	if len(mids) == 0 {
-		return nil, hasPendingInvitees, fmt.Errorf("chat %s has no joined members", chatMid)
-	}
-
-	// Cache complete results for fallback use. Do not replace a richer cached
-	// list when LINE returns only the caller.
-	lc.cacheGroupMemberMIDs(chatMid, mids)
-
-	return mids, hasPendingInvitees, nil
-}
-
-// autoRegisterGroupKey fetches group members, then registers a new E2EE group key
-// for the chat. This is called when fetchAndUnwrapGroupKey finds no key exists.
+// autoRegisterGroupKey uses LINE's current member/key snapshot for registration.
 func (lc *LineClient) autoRegisterGroupKey(ctx context.Context, chatMid string) error {
-	members, hasPendingInvitees, err := lc.getChatMemberMIDs(ctx, chatMid)
-	if err != nil {
-		return fmt.Errorf("getChatMemberMIDs: %w", err)
-	}
-
-	// If getChatMemberMIDs returned only ourself, the server likely returned
-	// an empty MemberMids map (known LINE API issue). Fall back to cached
-	// member list from CreateGroup or a prior successful fetch.
-	if len(members) == 1 && members[0] == lc.Mid && !hasPendingInvitees {
-		lc.cacheMu.Lock()
-		cached, ok := lc.groupMemberCache[chatMid]
-		cached = append([]string(nil), cached...)
-		lc.cacheMu.Unlock()
-		if ok && len(cached) > 1 {
-			lc.UserLogin.Bridge.Log.Warn().Str("chat_mid", chatMid).
-				Msg("GetChats returned only self MID, falling back to cached member list")
-			members = cached
-		}
-	}
-
-	// Last resort: query Matrix room members via the bridge API.
-	if len(members) == 1 && members[0] == lc.Mid && !hasPendingInvitees {
-		matrixMembers, err := lc.getGroupMemberMIDsViaMatrix(ctx, chatMid)
-		if err != nil {
-			lc.UserLogin.Bridge.Log.Warn().Err(err).Str("chat_mid", chatMid).
-				Msg("Matrix member fallback also failed")
-		} else if len(matrixMembers) > 1 {
-			lc.UserLogin.Bridge.Log.Warn().Str("chat_mid", chatMid).
-				Int("members", len(matrixMembers)).
-				Msg("GetChats returned only self MID, falling back to Matrix room members")
-			members = matrixMembers
-		}
-	}
-
-	return lc.registerGroupKey(ctx, chatMid, members)
+	return lc.registerGroupKey(ctx, chatMid)
 }
-
-// getGroupMemberMIDsViaMatrix queries the Matrix room's member list via the bridge
-// API and converts ghost user IDs back to LINE MIDs. This is a fallback when the
-// LINE API's GetChats withMembers returns an empty MemberMids map.
-func (lc *LineClient) getGroupMemberMIDsViaMatrix(ctx context.Context, chatMid string) (_ []string, err error) {
-	portalKey := networkid.PortalKey{
-		ID:       makePortalID(chatMid),
-		Receiver: lc.UserLogin.ID,
-	}
-	portal, err := lc.UserLogin.Bridge.GetPortalByKey(ctx, portalKey)
-	if err != nil {
-		return nil, fmt.Errorf("get portal: %w", err)
-	}
-	if portal == nil || portal.MXID == "" {
-		return nil, fmt.Errorf("portal has no Matrix room")
-	}
-
-	matrixMembers, err := lc.UserLogin.Bridge.Matrix.GetMembers(ctx, portal.MXID)
-	if err != nil {
-		return nil, fmt.Errorf("get matrix members: %w", err)
-	}
-
-	mids := make([]string, 0, len(matrixMembers))
-	seen := make(map[string]struct{}, len(matrixMembers)+1)
-	for mxid := range matrixMembers {
-		// Skip the bridge user's own Matrix account if present.
-		if mxid == lc.UserLogin.UserMXID {
-			continue
-		}
-		// Parse the ghost MXID back to a network ID (LINE MID).
-		if netID, ok := lc.UserLogin.Bridge.Matrix.ParseGhostMXID(mxid); ok {
-			mid := string(netID)
-			if isUserMID(mid) && !lc.isOwnMID(mid) {
-				if _, exists := seen[mid]; exists {
-					continue
-				}
-				seen[mid] = struct{}{}
-				mids = append(mids, mid)
-			}
-		}
-	}
-
-	if len(mids) == 0 {
-		return nil, fmt.Errorf("no LINE members found via Matrix")
-	}
-
-	// Include the bridge user's MID when it has a valid user prefix.
-	if isUserMID(lc.Mid) {
-		mids = append(mids, lc.Mid)
-	}
-
-	lc.UserLogin.Bridge.Log.Debug().Str("chat_mid", chatMid).
-		Int("matrix_members", len(matrixMembers)).
-		Int("resolved_mids", len(mids)).
-		Msg("Resolved group members via Matrix room")
-
-	return mids, nil
-}
-
 func (lc *LineClient) ensurePeerKeyByID(ctx context.Context, mid string, keyID int) (int, string, error) {
 	lc.cacheMu.Lock()
 	if lc.peerKeys == nil {
